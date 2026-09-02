@@ -1,0 +1,33 @@
+{
+  "name": "@7agentes/workflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local workflow ledger and MCP server for agent-driven implementation",
+  "type": "module",
+  "bin": {
+    "workflow": "dist/interfaces/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:watch": "jest --watch",
+    "lint": "tsc -p tsconfig.build.json --noEmit",
+    "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
+    "start:mcp": "node dist/interfaces/mcp/main.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "@prisma/client": "^6.19.0",
+    "commander": "^13.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.7",
+    "jest": "^29.7.0",
+    "prisma": "^6.19.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  }
+}

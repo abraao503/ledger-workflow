@@ -1,0 +1,202 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+
+import { isWorkflowApplicationError } from '../../application/workflow-ledger.js';
+import type { WorkflowApp } from '../../application/workflow-app.js';
+import { workItemStates } from '../../domain/workflow-state.js';
+
+export function createMcpServer(app: WorkflowApp): McpServer {
+  const server = new McpServer({
+    name: '7agentes-workflow',
+    version: '0.1.0',
+  });
+
+  server.registerTool(
+    'workflow_context',
+    {
+      description: 'Retorna o contexto curto da feature e da fatia ativa.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+        maxChars: z.number().int().min(512).max(50_000).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.getContext(input)),
+  );
+
+  server.registerTool(
+    'workflow_record',
+    {
+      description: 'Retorna o registro detalhado recente de uma fatia, sem logs crus.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.getRecord(input)),
+  );
+
+  server.registerTool(
+    'workflow_define_item',
+    {
+      description: 'Registra uma fatia com casos de uso, critérios e testes.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        key: z.string(),
+        phaseKey: z.string(),
+        position: z.number().int(),
+        title: z.string(),
+        kind: z.enum(['CODE', 'DOCUMENTATION', 'VALIDATION', 'OTHER']).optional(),
+        summary: z.string().optional(),
+        tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).optional(),
+        useCases: z.array(z.object({
+          key: z.string(),
+          title: z.string(),
+          actor: z.string(),
+          preconditions: z.string(),
+          trigger: z.string(),
+          expectedOutcome: z.string(),
+          invariants: z.array(z.string()).optional(),
+        })),
+        criteria: z.array(z.object({
+          key: z.string(),
+          statement: z.string(),
+          useCaseKey: z.string().optional(),
+          required: z.boolean().optional(),
+        })),
+        tests: z.array(z.object({
+          key: z.string(),
+          name: z.string(),
+          purpose: z.enum(['RED', 'GREEN', 'CHECK']),
+          runnerProfileKey: z.string().optional(),
+          criterionKey: z.string().optional(),
+        })),
+      },
+    },
+    async (input) => runTool(() => app.ledger.defineWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_authorize',
+    {
+      description: 'Autoriza uma fatia e captura os baselines Git somente leitura.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        instruction: z.string(),
+        actor: z.string(),
+        allowedEffects: z.array(z.string()),
+        forbiddenEffects: z.array(z.string()),
+        repositoryKeys: z.array(z.string()).min(1),
+      },
+    },
+    async (input) => runTool(() => app.ledger.authorizeWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_validate',
+    {
+      description: 'Executa um perfil allowlistado e registra a validação RED, GREEN ou CHECK.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        repositoryKey: z.string(),
+        profileKey: z.string(),
+        purpose: z.enum(['RED', 'GREEN', 'CHECK']),
+      },
+    },
+    async (input) => runTool(async () => {
+      const result = await app.validation.run(input);
+      return {
+        id: result.validation.id,
+        status: result.validation.status,
+        resultKind: result.validation.resultKind,
+        sha: result.validation.sha,
+        durationMs: result.validation.durationMs,
+        classification: result.classification,
+      };
+    }),
+  );
+
+  server.registerTool(
+    'workflow_transition',
+    {
+      description: 'Avança uma fatia pela máquina de estados com suas evidências.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        to: z.enum(workItemStates),
+        reason: z.string().optional(),
+        commitSha: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.transitionWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_review',
+    {
+      description: 'Registra a revisão e seus achados para uma fatia.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        reviewer: z.string(),
+        verdict: z.enum(['APPROVED', 'CHANGES_REQUIRED', 'BLOCKED']),
+        summary: z.string(),
+        findings: z.array(z.object({
+          severity: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']),
+          location: z.string(),
+          evidence: z.string(),
+          risk: z.string(),
+          correction: z.string(),
+          testNeeded: z.string(),
+          resolved: z.boolean().optional(),
+        })).default([]),
+      },
+    },
+    async (input) => runTool(() => app.ledger.submitReview(input)),
+  );
+
+  server.registerTool(
+    'workflow_compact_history',
+    {
+      description: 'Compacta o histórico antigo e preserva a fatia ativa, recentes e protegidas.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        activeItemKey: z.string(),
+        keepRecent: z.number().int().min(0).max(20).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.compactHistory(input)),
+  );
+
+  return server;
+}
+
+async function runTool(action: () => Promise<unknown>) {
+  try {
+    const value = await action();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(value) }],
+    };
+  } catch (error) {
+    const message = isWorkflowApplicationError(error)
+      ? `[${error.code}] ${error.message}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
+
+    return {
+      isError: true,
+      content: [{ type: 'text' as const, text: message }],
+    };
+  }
+}

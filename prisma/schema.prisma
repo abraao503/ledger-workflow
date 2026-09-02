@@ -1,0 +1,327 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id           String                     @id @default(cuid())
+  key          String                     @unique
+  name         String
+  rootPath     String
+  status       String                     @default("ACTIVE")
+  createdAt    DateTime                   @default(now())
+  updatedAt    DateTime                   @updatedAt
+  repositories Repository[]
+  templates    WorkflowTemplateVersion[]
+  features     Feature[]
+  plans        PlanVersion[]
+  decisions    Decision[]
+  pendingItems PendingItem[]
+  events       WorkflowEvent[]
+  summaries    HistorySummary[]
+}
+
+model Repository {
+  id               String             @id @default(cuid())
+  projectId        String
+  key              String
+  path             String
+  expectedBranch   String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  validationProfiles ValidationProfile[]
+  snapshots        RepositorySnapshot[]
+  @@unique([projectId, key])
+}
+
+model WorkflowTemplateVersion {
+  id           String    @id @default(cuid())
+  projectId    String
+  key          String
+  version      Int
+  name         String
+  definitionJson String
+  createdAt    DateTime  @default(now())
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  features     Feature[]
+  @@unique([projectId, key, version])
+}
+
+model PlanVersion {
+  id             String    @id @default(cuid())
+  projectId      String
+  featureId      String?
+  key            String
+  version        Int
+  title          String
+  summary        String
+  constraintsJson String
+  outOfScopeJson String
+  sourceRef      String?
+  createdAt      DateTime  @default(now())
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  feature        Feature?  @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  @@unique([projectId, key, version])
+}
+
+model Feature {
+  id           String                   @id @default(cuid())
+  projectId    String
+  templateId   String
+  key          String
+  name         String
+  summary      String
+  status       String                   @default("ACTIVE")
+  currentPhaseKey String?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  template     WorkflowTemplateVersion @relation(fields: [templateId], references: [id])
+  plans        PlanVersion[]
+  items        WorkItem[]
+  decisions    Decision[]
+  pendingItems PendingItem[]
+  events       WorkflowEvent[]
+  summaries    HistorySummary[]
+  @@unique([projectId, key])
+}
+
+model WorkItem {
+  id                  String                 @id @default(cuid())
+  featureId           String
+  key                 String
+  phaseKey            String
+  position            Int
+  title               String
+  kind                String                 @default("CODE")
+  state               String                 @default("DRAFT")
+  summary             String?
+  requirementsComplete Boolean               @default(false)
+  tddPolicy           String                 @default("REQUIRED")
+  currentSha          String?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  feature             Feature                @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  useCases            UseCase[]
+  criteria            AcceptanceCriterion[]
+  tests               TestSpecification[]
+  authorizations      Authorization[]
+  snapshots           RepositorySnapshot[]
+  validations         ValidationRun[]
+  reviews             Review[]
+  decisions           Decision[]
+  pendingItems        PendingItem[]
+  events              WorkflowEvent[]
+  summaries           HistorySummary[]
+  @@unique([featureId, key])
+  @@index([featureId, position])
+}
+
+model UseCase {
+  id              String   @id @default(cuid())
+  workItemId      String
+  key             String
+  title           String
+  actor           String
+  preconditions   String
+  trigger         String
+  expectedOutcome String
+  invariantsJson  String
+  createdAt       DateTime @default(now())
+  workItem        WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  criteria        AcceptanceCriterion[]
+  @@unique([workItemId, key])
+}
+
+model AcceptanceCriterion {
+  id          String   @id @default(cuid())
+  workItemId  String
+  useCaseId   String?
+  key         String
+  statement   String
+  required    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  workItem    WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  useCase     UseCase? @relation(fields: [useCaseId], references: [id], onDelete: SetNull)
+  tests       TestSpecification[]
+  @@unique([workItemId, key])
+}
+
+model TestSpecification {
+  id            String               @id @default(cuid())
+  workItemId    String
+  criterionId   String?
+  key           String
+  name          String
+  purpose       String
+  runnerProfileKey String?
+  status        String               @default("PLANNED")
+  createdAt     DateTime             @default(now())
+  workItem      WorkItem             @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  criterion     AcceptanceCriterion? @relation(fields: [criterionId], references: [id], onDelete: SetNull)
+  @@unique([workItemId, key])
+}
+
+model Authorization {
+  id              String   @id @default(cuid())
+  workItemId      String
+  instruction     String
+  allowedEffectsJson String
+  forbiddenEffectsJson String
+  actor           String
+  createdAt       DateTime @default(now())
+  workItem        WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  @@index([workItemId, createdAt])
+}
+
+model RepositorySnapshot {
+  id           String   @id @default(cuid())
+  workItemId   String
+  repositoryId String
+  branch       String
+  sha          String
+  dirty        Boolean
+  changedFilesJson String
+  capturedAt   DateTime @default(now())
+  workItem     WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  @@index([workItemId, capturedAt])
+}
+
+model ValidationProfile {
+  id             String   @id @default(cuid())
+  repositoryId   String
+  key            String
+  program        String
+  argsJson       String
+  cwd            String
+  parser         String
+  timeoutSeconds Int      @default(60)
+  maxOutputBytes Int      @default(2000000)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  repository     Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  runs           ValidationRun[]
+  @@unique([repositoryId, key])
+}
+
+model ValidationRun {
+  id             String            @id @default(cuid())
+  workItemId     String
+  profileId      String
+  purpose        String
+  status         String
+  resultKind     String
+  exitCode       Int?
+  sha            String
+  durationMs     Int
+  summaryJson    String
+  logBlob        Bytes?
+  logExpiresAt   DateTime?
+  createdAt      DateTime          @default(now())
+  workItem       WorkItem          @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  profile        ValidationProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  @@index([workItemId, createdAt])
+}
+
+model Review {
+  id         String          @id @default(cuid())
+  workItemId String
+  verdict    String
+  reviewer   String
+  summary    String
+  createdAt  DateTime        @default(now())
+  workItem   WorkItem        @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  findings   ReviewFinding[]
+  @@index([workItemId, createdAt])
+}
+
+model ReviewFinding {
+  id          String   @id @default(cuid())
+  reviewId    String
+  severity    String
+  location    String
+  evidence    String
+  risk        String
+  correction  String
+  testNeeded  String
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  review      Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+}
+
+model Decision {
+  id          String   @id @default(cuid())
+  projectId   String
+  featureId   String?
+  workItemId  String?
+  key         String
+  title       String
+  content     String
+  durable     Boolean  @default(true)
+  pinned      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  feature     Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  workItem    WorkItem? @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+  @@unique([projectId, key])
+}
+
+model PendingItem {
+  id          String   @id @default(cuid())
+  projectId   String
+  featureId   String?
+  workItemId  String?
+  key         String
+  description String
+  blocking    Boolean  @default(false)
+  resolved    Boolean  @default(false)
+  pinned      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  feature     Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  workItem    WorkItem? @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+  @@unique([projectId, key])
+}
+
+model WorkflowEvent {
+  id         String   @id @default(cuid())
+  projectId  String
+  featureId  String?
+  workItemId String?
+  type       String
+  payloadJson String
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  feature    Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  workItem   WorkItem? @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+  @@index([projectId, createdAt])
+  @@index([workItemId, createdAt])
+}
+
+model HistorySummary {
+  id             String   @id @default(cuid())
+  projectId      String
+  featureId      String?
+  workItemId     String?
+  scopeKey       String
+  state          String
+  result         String
+  deliveredJson  String
+  commitsJson    String
+  validationsJson String
+  limitationsJson String
+  pinned         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  feature        Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  workItem       WorkItem? @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+  @@unique([projectId, scopeKey])
+}

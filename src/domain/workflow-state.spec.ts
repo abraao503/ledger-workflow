@@ -1,0 +1,113 @@
+import {
+  WorkflowStateMachine,
+  WorkflowTransitionError,
+  type TransitionContext,
+  type WorkItemState,
+} from './workflow-state.js';
+
+const baseContext = (): TransitionContext => ({
+  requirementsComplete: true,
+  authorized: true,
+  testsDefined: true,
+  redEvidence: true,
+  redEvidenceSha: 'sha-1',
+  currentSha: 'sha-1',
+  greenEvidence: true,
+  greenEvidenceSha: 'sha-1',
+  reviewApproved: true,
+  hasBlockingFindings: false,
+  commitSha: 'sha-1',
+});
+
+describe('WorkflowStateMachine', () => {
+  const machine = new WorkflowStateMachine();
+
+  it('allows the happy path from planning to closure', () => {
+    const path: WorkItemState[] = [
+      'DRAFT',
+      'READY',
+      'AUTHORIZED',
+      'TESTS_DEFINED',
+      'RED_CONFIRMED',
+      'IMPLEMENTING',
+      'GREEN_CONFIRMED',
+      'READY_FOR_REVIEW',
+      'APPROVED',
+      'CLOSED',
+    ];
+    const context = baseContext();
+
+    for (let index = 0; index < path.length - 1; index += 1) {
+      expect(() =>
+        machine.assertTransition(path[index], path[index + 1], context),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects implementation before explicit authorization', () => {
+    const context = { ...baseContext(), authorized: false };
+
+    expect(() => machine.assertTransition('READY', 'AUTHORIZED', context))
+      .toThrow(WorkflowTransitionError);
+    expect(() => machine.assertTransition('READY', 'AUTHORIZED', context))
+      .toThrow('AUTHORIZATION_REQUIRED');
+  });
+
+  it('rejects a coding item without tests or RED evidence', () => {
+    expect(() =>
+      machine.assertTransition('AUTHORIZED', 'TESTS_DEFINED', {
+        ...baseContext(),
+        testsDefined: false,
+      }),
+    ).toThrow('TESTS_REQUIRED');
+
+    expect(() =>
+      machine.assertTransition('TESTS_DEFINED', 'RED_CONFIRMED', {
+        ...baseContext(),
+        redEvidence: false,
+      }),
+    ).toThrow('RED_EVIDENCE_REQUIRED');
+  });
+
+  it('allows a documented TDD exception but requires a reason', () => {
+    expect(() =>
+      machine.assertTransition('TESTS_DEFINED', 'TDD_EXCEPTION_APPROVED', {
+        ...baseContext(),
+        tddExceptionReason: 'Document-only phase',
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      machine.assertTransition('TESTS_DEFINED', 'TDD_EXCEPTION_APPROVED', {
+        ...baseContext(),
+      }),
+    ).toThrow('TDD_EXCEPTION_REASON_REQUIRED');
+  });
+
+  it('rejects GREEN evidence recorded against another SHA', () => {
+    expect(() =>
+      machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
+        ...baseContext(),
+        currentSha: 'sha-2',
+      }),
+    ).toThrow('GREEN_EVIDENCE_STALE');
+  });
+
+  it('does not approve a review with blocking findings', () => {
+    expect(() =>
+      machine.assertTransition('READY_FOR_REVIEW', 'APPROVED', {
+        ...baseContext(),
+        hasBlockingFindings: true,
+      }),
+    ).toThrow('BLOCKING_FINDINGS');
+  });
+
+  it('requires a commit before closing an approved item', () => {
+    expect(() =>
+      machine.assertTransition('APPROVED', 'CLOSED', {
+        ...baseContext(),
+        commitSha: undefined,
+      }),
+    ).toThrow('COMMIT_REQUIRED');
+  });
+});
