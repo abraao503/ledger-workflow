@@ -96,5 +96,92 @@ describe('WorkflowImporter', () => {
     await expect(importer.import(input)).rejects.toMatchObject({
       code: 'REPOSITORY_PATH_INVALID',
     });
+    expect(await database.client.project.findUnique({ where: { key: 'invalid' } })).toBeNull();
+  });
+
+  it('imports validation evidence with its profile without duplicating it on replay', async () => {
+    const input = parseWorkflowImport({
+      schemaVersion: 1,
+      importKey: 'runs-1',
+      project: { key: 'runs', name: 'Runs', rootPath: '/tmp/runs' },
+      repositories: [{ key: 'api', path: '/tmp/runs/api' }],
+      templates: [{ key: 'default', name: 'Default', definition: {} }],
+      validationProfiles: [{
+        repositoryKey: 'api',
+        key: 'related',
+        program: 'npm',
+        args: ['run', 'test:modified'],
+        parser: 'JEST',
+      }],
+      features: [{
+        key: 'F1',
+        templateKey: 'default',
+        name: 'Feature',
+        summary: 'Feature',
+        items: [{
+          key: '01',
+          phaseKey: 'G1',
+          position: 1,
+          title: 'Item',
+          state: 'CLOSED',
+          requirementsComplete: true,
+          validations: [{
+            repositoryKey: 'api',
+            profileKey: 'related',
+            purpose: 'CHECK',
+            status: 'COMPLETED',
+            resultKind: 'PASS',
+            exitCode: 0,
+            sha: 'sha-1',
+            durationMs: 10,
+            summary: { imported: true },
+          }],
+        }],
+      }],
+    });
+
+    await expect(importer.import(input)).resolves.toMatchObject({ imported: true });
+    await expect(importer.import(input)).resolves.toMatchObject({ imported: false });
+    expect(await database.client.validationProfile.count({
+      where: { repository: { project: { key: 'runs' } } },
+    })).toBe(1);
+    expect(await database.client.validationRun.count({
+      where: { workItem: { feature: { project: { key: 'runs' } } } },
+    })).toBe(1);
+  });
+
+  it('rolls back the entire import when a child reference is invalid', async () => {
+    const input = parseWorkflowImport({
+      schemaVersion: 1,
+      importKey: 'invalid-reference-1',
+      project: { key: 'invalid-reference', name: 'Invalid reference', rootPath: '/tmp/invalid-reference' },
+      templates: [{ key: 'default', name: 'Default', definition: {} }],
+      features: [{
+        key: 'F1',
+        templateKey: 'default',
+        name: 'Feature',
+        summary: 'Feature',
+        items: [{
+          key: '01',
+          phaseKey: 'G1',
+          position: 1,
+          title: 'Item',
+          useCases: [{
+            key: 'UC-01',
+            title: 'Caso',
+            actor: 'agent',
+            preconditions: 'pre',
+            trigger: 'trigger',
+            expectedOutcome: 'outcome',
+          }],
+          criteria: [{ key: 'AC-01', statement: 'critério', useCaseKey: 'missing' }],
+        }],
+      }],
+    });
+
+    await expect(importer.import(input)).rejects.toMatchObject({
+      code: 'CRITERION_USE_CASE_NOT_FOUND',
+    });
+    expect(await database.client.project.findUnique({ where: { key: 'invalid-reference' } })).toBeNull();
   });
 });

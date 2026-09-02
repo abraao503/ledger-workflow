@@ -49,4 +49,35 @@ describe('GitReadAdapter', () => {
       code: 'GIT_COMMAND_FAILED',
     });
   });
+
+  it('treats whitespace-only status as a clean baseline', async () => {
+    const command: GitCommandPort = {
+      run: async (args) => {
+        if (args.includes('--abbrev-ref')) {
+          return 'dev\n';
+        }
+        if (args[2] === 'HEAD') {
+          return 'abc123\n';
+        }
+        return '  \n\n';
+      },
+    };
+
+    await expect(new GitReadAdapter(command).capture('/workspace/api')).resolves.toEqual({
+      branch: 'dev',
+      sha: 'abc123',
+      dirty: false,
+      changedFiles: [],
+    });
+  });
+
+  it('rejects a repository when branch or SHA cannot be resolved', async () => {
+    const command: GitCommandPort = {
+      run: async (args) => args.includes('--abbrev-ref') ? '\n' : 'abc123\n',
+    };
+
+    await expect(new GitReadAdapter(command).capture('/workspace/api')).rejects.toMatchObject({
+      code: 'GIT_COMMAND_FAILED',
+    });
+  });
 });

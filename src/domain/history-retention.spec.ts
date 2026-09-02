@@ -53,4 +53,29 @@ describe('selectHistoryRetention', () => {
     expect(result.keepDetailed).toEqual(['05', '06', '07']);
     expect(result.compact).toEqual(['01', '02', '03', '04']);
   });
+
+  it('handles an active first item without inventing recent history', () => {
+    const result = selectHistoryRetention([
+      { key: '01', order: 1, state: 'READY' },
+      { key: '02', order: 2, state: 'DRAFT' },
+    ], {
+      activeKey: '01',
+      keepRecent: 2,
+    });
+
+    expect(result.keepDetailed).toEqual(['01', '02']);
+    expect(result.compact).toEqual([]);
+  });
+
+  it('does not let a protected key outside the set alter the result', () => {
+    const result = selectHistoryRetention(records, {
+      activeKey: '05',
+      keepRecent: 1,
+      pinnedKeys: ['not-present'],
+      unresolvedKeys: ['also-not-present'],
+    });
+
+    expect(result.keepDetailed).toEqual(['04', '05']);
+    expect(result.compact).toEqual(['01', '02', '03']);
+  });
 });

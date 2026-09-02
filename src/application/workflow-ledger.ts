@@ -309,6 +309,12 @@ export class WorkflowLedger {
       fail('DIRTY_BASELINE');
     }
 
+    if (baselines.some(({ repository, snapshot }) => (
+      repository.expectedBranch && repository.expectedBranch !== snapshot.branch
+    ))) {
+      fail('EXPECTED_BRANCH_MISMATCH');
+    }
+
     this.stateMachine.assertTransition('READY', 'AUTHORIZED', {
       authorized: true,
     });
@@ -453,6 +459,10 @@ export class WorkflowLedger {
 
   async submitReview(input: SubmitReviewInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+
+    if (item.state !== 'READY_FOR_REVIEW') {
+      fail('REVIEW_STATE_INVALID');
+    }
 
     return this.db.$transaction(async (transaction) => {
       const review = await transaction.review.create({

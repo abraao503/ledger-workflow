@@ -1,8 +1,11 @@
+import { gunzipSync } from 'node:zlib';
+
 import type { PrismaClient } from '@prisma/client';
 
-import { GitReadPort, CommandRequest, CommandRunner } from './types.js';
+import type { CommandRequest, CommandRunner, GitReadPort } from './types.js';
 import {
   classifyCommandResult,
+  createCommandRunner,
   ValidationExecutor,
 } from './validation-executor.js';
 import { WorkflowLedger } from './workflow-ledger.js';
@@ -38,6 +41,47 @@ describe('validation executor', () => {
         ),
       ).toEqual({ status: 'FAILED_TO_START', resultKind: 'INFRASTRUCTURE_ERROR' });
     });
+
+    it('does not call a Jest assertion a test failure when the runner lacks Jest output', () => {
+      expect(
+        classifyCommandResult({
+          exitCode: 1,
+          stdout: 'Error: Cannot find module',
+          stderr: '',
+          timedOut: false,
+        }, 'JEST'),
+      ).toEqual({ status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' });
+      expect(
+        classifyCommandResult({
+          exitCode: 2,
+          stdout: 'validator reported an invalid result',
+          stderr: '',
+          timedOut: false,
+        }, 'GENERIC'),
+      ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
+    });
+  });
+
+  it('caps process output and terminates a timed-out child without a shell', async () => {
+    const runner = createCommandRunner();
+    const output = await runner.run({
+      executable: 'printf',
+      args: ['%s', 'x'.repeat(4_096)],
+      cwd: process.cwd(),
+      timeoutMs: 1_000,
+      maxOutputBytes: 1_024,
+    });
+    expect(output.error).toBe('OUTPUT_LIMIT_EXCEEDED');
+    expect(Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr)).toBeLessThanOrEqual(1_024);
+
+    const timeout = await runner.run({
+      executable: 'sleep',
+      args: ['1'],
+      cwd: process.cwd(),
+      timeoutMs: 50,
+      maxOutputBytes: 1_024,
+    });
+    expect(timeout.timedOut).toBe(true);
   });
 
   describe('run', () => {
@@ -179,6 +223,89 @@ describe('validation executor', () => {
       });
       expect(result.validation.summaryJson).not.toContain('Test Suites:');
       expect(result.validation.logBlob).toBeInstanceOf(Uint8Array);
+    });
+
+    it('rejects a purpose that does not match the item state before invoking the runner', async () => {
+      const callsBefore = requests.length;
+
+      await expect(executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'GREEN',
+      })).rejects.toMatchObject({ code: 'VALIDATION_PURPOSE_STATE_INVALID' });
+      expect(requests).toHaveLength(callsBefore);
+    });
+
+    it('bounds the persisted log and records timeout without pretending it passed', async () => {
+      await ledger.createValidationProfile({
+        projectKey: 'carara',
+        repositoryKey: 'api',
+        key: 'bounded',
+        program: 'npm',
+        args: ['test'],
+        parser: 'GENERIC',
+        maxOutputBytes: 1_024,
+      });
+      nextResult = {
+        exitCode: 1,
+        stdout: 'x'.repeat(4_096),
+        stderr: 'stderr',
+        timedOut: false,
+      };
+      const failed = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'bounded',
+        purpose: 'RED',
+      });
+      expect(failed.validation.resultKind).toBe('TEST_FAILURE');
+      expect(gunzipSync(Buffer.from(failed.validation.logBlob as Uint8Array)).byteLength)
+        .toBeLessThanOrEqual(1_024);
+
+      nextResult = {
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: true,
+      };
+      const timeout = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'bounded',
+        purpose: 'RED',
+      });
+      expect(timeout.validation.status).toBe('TIMED_OUT');
+      expect(timeout.validation.resultKind).toBe('TIMEOUT');
+    });
+
+    it('rejects a profile working directory that escapes its repository', async () => {
+      const repository = await client.repository.findFirstOrThrow();
+      await client.validationProfile.create({
+        data: {
+          repositoryId: repository.id,
+          key: 'escape',
+          program: 'npm',
+          argsJson: JSON.stringify(['test']),
+          cwd: '../outside',
+          parser: 'JEST',
+        },
+      });
+
+      await expect(executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'escape',
+        purpose: 'RED',
+      })).rejects.toMatchObject({ code: 'VALIDATION_CWD_INVALID' });
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { WorkflowApp } from '../../application/workflow-app.js';
+import { WorkflowApplicationError } from '../../application/errors.js';
 import { createCli } from './cli.js';
 
 describe('workflow CLI', () => {
@@ -40,5 +41,34 @@ describe('workflow CLI', () => {
       { key: 'carara', name: 'Carará', rootPath: '/tmp/carara' },
     ]);
     expect(output).toEqual(['{"id":"project-1","key":"carara"}\n']);
+  });
+
+  it('rejects malformed JSON before invoking a write operation', async () => {
+    let called = false;
+    const app = {
+      ledger: {
+        createTemplate: async () => {
+          called = true;
+          return {};
+        },
+      },
+    } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+
+    await expect(cli.parseAsync([
+      'node',
+      'workflow',
+      'template',
+      'create',
+      '--project',
+      'carara',
+      '--key',
+      'default',
+      '--name',
+      'Default',
+      '--definition',
+      '{invalid',
+    ])).rejects.toBeInstanceOf(WorkflowApplicationError);
+    expect(called).toBe(false);
   });
 });
