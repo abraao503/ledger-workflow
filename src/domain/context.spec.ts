@@ -12,6 +12,23 @@ const input = (): WorkflowContextInput => ({
     state: 'AUTHORIZED',
     nextAllowedTransition: 'TESTS_DEFINED',
   },
+  currentEvidence: {
+    outcome: 'tools do núcleo concluídas',
+    commitRef: 'commit-05',
+    validations: [{
+      purpose: 'GREEN',
+      result: 'PASS',
+      profileKey: 'related-tests',
+      durationMs: 200,
+      reused: false,
+    }],
+    review: {
+      verdict: 'APPROVED',
+      mode: 'SELF',
+      reviewer: 'Codex',
+      summary: 'critérios atendidos',
+    },
+  },
   authorization: {
     instruction: 'vamos para a próxima fatia',
     allowedEffects: ['api local'],
@@ -53,6 +70,7 @@ describe('buildWorkflowContext', () => {
     expect(result.current.itemKey).toBe('05');
     expect(result.durableDecisions).toEqual(input().durableDecisions);
     expect(result.unresolvedItems).toEqual(input().unresolvedItems);
+    expect(result.currentEvidence).toEqual(input().currentEvidence);
     expect(JSON.stringify(result)).not.toContain('log');
   });
 

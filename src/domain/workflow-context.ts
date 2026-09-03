@@ -7,6 +7,24 @@ export type WorkflowContextInput = {
     state: string;
     nextAllowedTransition?: string;
   };
+  currentEvidence?: {
+    outcome?: string;
+    commitRef?: string;
+    validations: Array<{
+      purpose: string;
+      result: string;
+      profileKey: string;
+      durationMs: number;
+      reused: boolean;
+      redKind?: string;
+    }>;
+    review?: {
+      verdict: string;
+      mode: 'SELF' | 'INDEPENDENT' | 'UNSPECIFIED';
+      reviewer: string;
+      summary: string;
+    };
+  };
   authorization?: {
     instruction: string;
     allowedEffects: string[];
@@ -33,7 +51,11 @@ export type WorkflowContextInput = {
     commitRefs: string[];
   }>;
   olderSummaries: Array<{ key: string; summary: string }>;
-  requiredChecks: Array<{ key: string; description: string }>;
+  requiredChecks: Array<{
+    key: string;
+    description: string;
+    status?: 'PASSED' | 'PENDING';
+  }>;
 };
 
 export type WorkflowContext = WorkflowContextInput & {
@@ -59,6 +81,7 @@ export function buildWorkflowContext(
 
   const compact: WorkflowContext = {
     current: input.current,
+    currentEvidence: input.currentEvidence,
     authorization: input.authorization
       ? {
           instruction: input.authorization.instruction,

@@ -1,8 +1,10 @@
 # Workflow ledger
 
 Aplicação local e independente para registrar o fluxo de implementação de
-features. O estado operacional fica no SQLite; os documentos históricos do
-Carará continuam versionados, congelados e não são atualizados pelo runtime.
+features. O SQLite do ledger é a única fonte de verdade para estado, sequência,
+autorização, critérios, evidências, revisões, pendências e fechamento. O CLI e
+o MCP consultam e atualizam esse estado; nenhuma fonte documental externa
+participa do fluxo operacional.
 
 ## Início rápido
 
@@ -11,7 +13,7 @@ rtk npm install
 rtk npm run prisma:generate
 rtk npm run prisma:migrate -- --name init
 rtk npm run build
-rtk node dist/interfaces/cli/main.js import-carara --root /caminho/para/7agentes
+rtk node dist/interfaces/cli/main.js import --file /caminho/para/snapshot.json
 ```
 
 Por padrão, o banco é `/caminho/para/7agentes/.workflow/workflow.sqlite`.
@@ -21,17 +23,50 @@ O diretório `.workflow/` não deve ser versionado.
 ## Uso diário
 
 ```bash
-rtk node dist/interfaces/cli/main.js context --project carara --feature E6
+rtk node dist/interfaces/cli/main.js context --project carara --feature E6 --item 06
 rtk node dist/interfaces/cli/main.js item authorize --help
 rtk node dist/interfaces/cli/main.js validate run --help
 rtk node dist/interfaces/cli/main.js item transition --help
 ```
 
-O comando `import` recebe um JSON com `schemaVersion: 1` e `importKey`. A
-mesma chave é aplicada uma única vez, permitindo reexecução segura. O comando
-`import-carara` fornece o snapshot inicial: E6/G3/fatias 01–04 em detalhe, a
-fatia 05 como próxima fatia `READY`, fatias posteriores planejadas e E0–E5.1
-como resumos.
+O primeiro comando é a consulta canônica para descobrir a fatia ativa, seu
+próximo estado, autorização, pendências, evidências, revisão e commit. Se a
+fatia não estiver informada, o contexto mostra o resumo da feature e suas
+fatias recentes. Para qualquer decisão de execução, use esse contexto antes
+de consultar os repositórios de código.
+
+O CLI e o MCP são infraestrutura do agente. O usuário autoriza a fatia e o
+agente conduz o ciclo até o fechamento; não se deve pedir ao usuário que rode
+transições ou validações intermediárias.
+
+### Ciclo de uma fatia de código
+
+1. consultar o contexto e confirmar a autorização;
+2. escrever os testes e avançar para `TESTS_DEFINED`;
+3. executar `validate run --purpose RED`; um RED comportamental avança para
+   `RED_CONFIRMED` automaticamente, enquanto um RED estrutural exige `--reason`;
+4. avançar para `IMPLEMENTING`, implementar e executar `--purpose GREEN`; um
+   resultado válido avança automaticamente para `GREEN_CONFIRMED`;
+5. avançar para `READY_FOR_REVIEW` e registrar a revisão como `SELF` ou
+   `INDEPENDENT`; o veredito já move o item para `APPROVED`,
+   `CHANGES_REQUIRED` ou `BLOCKED`;
+6. após o commit, fechar o item com o SHA.
+
+`RED` prova que os testes detectam a ausência do comportamento. `GREEN` prova
+que o mesmo delta passou após a implementação. `CHECK` representa uma
+verificação adicional: quando usa o mesmo perfil e a mesma worktree do GREEN,
+o ledger reaproveita a evidência sem executar a suíte novamente. Uma mudança
+na worktree invalida o reaproveitamento.
+
+As evidências usam um fingerprint de `HEAD`, diff e arquivos novos, não apenas
+o SHA do commit. O contexto curto mostra o resultado corrente, validações,
+modo de revisão e commit, além das duas fatias anteriores.
+
+O comando `import` recebe somente um JSON com `schemaVersion: 1` e `importKey`.
+A mesma chave é aplicada uma única vez, permitindo reexecução segura. Essa
+operação serve apenas para bootstrap ou migração explícita de um snapshot
+estruturado; não é usada para consultar o estado corrente nem para substituir
+as transições normais do ledger.
 
 ## Regras de segurança
 
@@ -40,6 +75,8 @@ como resumos.
   `yarn`), sempre sem shell, dentro do repositório registrado.
 - O executor limita tempo e saída. O resumo não contém log cru; o log, quando
   necessário, fica comprimido no banco por sete dias.
+- O estado corrente deve ser lido com `context`; autorização, validação,
+  revisão e fechamento devem ser registrados pelas operações do ledger.
 - O MCP não aceita shell arbitrário, não altera arquivos, não faz stage/commit
   e não chama providers ou serviços externos.
 - Contexto curto preserva a fatia ativa, decisões duráveis, pendências,
@@ -54,7 +91,29 @@ servidor `workflow` com aprovação para operações de escrita.
 
 As ferramentas principais são `workflow_context`, `workflow_record`,
 `workflow_define_item`, `workflow_authorize`, `workflow_validate`,
-`workflow_transition`, `workflow_review` e `workflow_compact_history`.
+`workflow_transition`, `workflow_reopen`, `workflow_review` e
+`workflow_compact_history`.
+
+## Dashboard web local
+
+O dashboard operacional usa o mesmo SQLite do CLI/MCP e fica disponível apenas
+no loopback:
+
+```bash
+rtk npm run build
+rtk npm run start:web
+```
+
+Abra `http://127.0.0.1:4117`. Durante o desenvolvimento, use
+`rtk npm run dev:web`; a página é atualizada a cada cinco segundos para refletir
+ações feitas por agentes. A interface calcula as ações elegíveis no servidor,
+revalida o estado antes de cada mutação e permite abrir logs de validação apenas
+enquanto ainda estiverem dentro da retenção de sete dias.
+
+Itens criados pelo CLI/MCP continuam sendo a fonte para definição de projetos,
+features, testes e perfis. O dashboard conduz autorização, transições,
+validações, reviews, bloqueios, reaberturas e compactação quando os pré-
+requisitos do ledger estiverem satisfeitos.
 
 ## Desenvolvimento
 

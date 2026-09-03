@@ -164,6 +164,23 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       }), stdout);
     });
 
+  item
+    .command('reopen')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.reopenWorkItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        actor: options.actor,
+        reason: options.reason,
+      }), stdout);
+    });
+
   const validationProfile = program
     .command('validation-profile')
     .description('Registra comandos de validação allowlistados');
@@ -201,6 +218,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--repository <key>')
     .requiredOption('--profile <key>')
     .requiredOption('--purpose <purpose>', 'RED|GREEN|CHECK')
+    .option('--reason <text>', 'explicação obrigatória para RED estrutural')
     .action(async (options, command) => {
       const result = await app.validation.run({
         projectKey: options.project,
@@ -209,6 +227,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         repositoryKey: options.repository,
         profileKey: options.profile,
         purpose: options.purpose,
+        reason: options.reason,
       });
       emit(command, {
         id: result.validation.id,
@@ -217,6 +236,9 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         sha: result.validation.sha,
         durationMs: result.validation.durationMs,
         classification: result.classification,
+        reused: result.reused,
+        itemState: result.itemState,
+        actionRequired: result.actionRequired,
       }, stdout);
     });
 
@@ -227,6 +249,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')
     .requiredOption('--reviewer <name>')
+    .option('--mode <mode>', 'SELF|INDEPENDENT', 'SELF')
     .requiredOption('--verdict <verdict>', 'APPROVED|CHANGES_REQUIRED|BLOCKED')
     .requiredOption('--summary <summary>')
     .option('--findings <json>', '[]')
@@ -236,6 +259,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         featureKey: options.feature,
         itemKey: options.item,
         reviewer: options.reviewer,
+        reviewMode: options.mode,
         verdict: options.verdict,
         summary: options.summary,
         findings: parseJson(options.findings, 'findings'),

@@ -22,7 +22,26 @@ type ValidationResultKind = 'PASS' | 'TEST_FAILURE' | 'INFRASTRUCTURE_ERROR' | '
 export type ValidationClassification = {
   status: ValidationStatus;
   resultKind: ValidationResultKind;
+  redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
+  testsTotal?: number;
 };
+
+export function classifyRedEvidence(
+  output: string,
+  parser: ValidationParser,
+): Pick<ValidationClassification, 'redEvidenceKind' | 'testsTotal'> {
+  if (parser !== 'JEST') {
+    return { redEvidenceKind: 'BEHAVIORAL' };
+  }
+
+  const tests = output.match(/Tests:\s+.*?(\d+)\s+total/i);
+  const testsTotal = tests ? Number(tests[1]) : 0;
+
+  return {
+    redEvidenceKind: testsTotal > 0 ? 'BEHAVIORAL' : 'STRUCTURAL',
+    testsTotal,
+  };
+}
 
 export function classifyCommandResult(
   result: CommandResult,
@@ -109,7 +128,61 @@ export class ValidationExecutor {
       fail('VALIDATION_CWD_INVALID');
     }
 
-    const snapshot = await this.git.capture(repositoryPath);
+    const snapshotBefore = await this.git.capture(repositoryPath);
+    const coveredTests = await this.db.testSpecification.findMany({
+      where: {
+        workItemId: currentItem.id,
+        purpose: input.purpose,
+        OR: [
+          { runnerProfileKey: null },
+          { runnerProfileKey: input.profileKey },
+        ],
+      },
+      select: { key: true },
+      orderBy: { key: 'asc' },
+    });
+
+    if (input.purpose === 'CHECK') {
+      const reusableGreen = await this.findReusableGreen(
+        currentItem.id,
+        currentProfile.id,
+        snapshotBefore.fingerprint,
+      );
+
+      if (reusableGreen) {
+        const validation = await this.ledger.recordValidation({
+          projectKey: input.projectKey,
+          featureKey: input.featureKey,
+          itemKey: input.itemKey,
+          repositoryKey: input.repositoryKey,
+          profileKey: input.profileKey,
+          purpose: 'CHECK',
+          status: 'COMPLETED',
+          resultKind: 'PASS',
+          exitCode: 0,
+          sha: snapshotBefore.sha,
+          durationMs: 0,
+          summary: {
+            parser: currentProfile.parser,
+            profileKey: input.profileKey,
+            fingerprint: snapshotBefore.fingerprint,
+            dirty: snapshotBefore.dirty,
+            changedFileCount: snapshotBefore.changedFiles.length,
+            coveredTestKeys: coveredTests.map((test) => test.key),
+            reusedFromValidationId: reusableGreen.id,
+            reusedFromPurpose: 'GREEN',
+          },
+        });
+
+        return {
+          validation,
+          classification: { status: 'COMPLETED', resultKind: 'PASS' } as ValidationClassification,
+          reused: true,
+          itemState: currentItem.state,
+        };
+      }
+    }
+
     const args = [
       currentProfile.program,
       ...decodeJson<string[]>(currentProfile.argsJson, []),
@@ -125,7 +198,17 @@ export class ValidationExecutor {
     const commandResult = await this.runner.run(request);
     const durationMs = Date.now() - startedAt;
     const parser: ValidationParser = currentProfile.parser === 'JEST' ? 'JEST' : 'GENERIC';
-    const classification = classifyCommandResult(commandResult, parser);
+    const snapshotAfter = await this.git.capture(repositoryPath);
+    const baseClassification = classifyCommandResult(commandResult, parser);
+    const worktreeChanged = snapshotBefore.fingerprint !== snapshotAfter.fingerprint;
+    const classification: ValidationClassification = worktreeChanged
+      ? { status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' }
+      : {
+          ...baseClassification,
+          ...(input.purpose === 'RED' && baseClassification.resultKind === 'TEST_FAILURE'
+            ? classifyRedEvidence(`${commandResult.stdout}\n${commandResult.stderr}`, parser)
+            : {}),
+        };
     const validation = await this.ledger.recordValidation({
       projectKey: input.projectKey,
       featureKey: input.featureKey,
@@ -136,7 +219,7 @@ export class ValidationExecutor {
       status: classification.status,
       resultKind: classification.resultKind,
       exitCode: commandResult.exitCode ?? undefined,
-      sha: snapshot.sha,
+      sha: snapshotAfter.sha,
       durationMs,
       summary: {
         parser,
@@ -149,13 +232,74 @@ export class ValidationExecutor {
         error: commandResult.error,
         stdoutBytes: Buffer.byteLength(commandResult.stdout),
         stderrBytes: Buffer.byteLength(commandResult.stderr),
-        dirty: snapshot.dirty,
-        changedFileCount: snapshot.changedFiles.length,
+        dirty: snapshotAfter.dirty,
+        changedFileCount: snapshotAfter.changedFiles.length,
+        fingerprint: snapshotAfter.fingerprint,
+        worktreeChangedDuringValidation: worktreeChanged,
+        coveredTestKeys: coveredTests.map((test) => test.key),
+        redEvidenceKind: classification.redEvidenceKind,
+        testsTotal: classification.testsTotal,
       },
       log: `${commandResult.stdout}${commandResult.stderr ? `\n${commandResult.stderr}` : ''}`,
     });
 
-    return { validation, classification, request };
+    let itemState = currentItem.state;
+    let actionRequired: string | undefined;
+
+    if (input.purpose === 'RED' && classification.resultKind === 'TEST_FAILURE') {
+      if (classification.redEvidenceKind === 'STRUCTURAL' && !input.reason?.trim()) {
+        actionRequired = 'STRUCTURAL_RED_REASON_REQUIRED';
+      } else {
+        const updated = await this.ledger.transitionWorkItem({
+          projectKey: input.projectKey,
+          featureKey: input.featureKey,
+          itemKey: input.itemKey,
+          to: 'RED_CONFIRMED',
+          reason: input.reason ?? 'RED comportamental confirmado automaticamente',
+        });
+        itemState = updated.state;
+      }
+    }
+
+    if (input.purpose === 'GREEN' && classification.resultKind === 'PASS') {
+      const updated = await this.ledger.transitionWorkItem({
+        projectKey: input.projectKey,
+        featureKey: input.featureKey,
+        itemKey: input.itemKey,
+        to: 'GREEN_CONFIRMED',
+        reason: 'GREEN confirmado automaticamente',
+      });
+      itemState = updated.state;
+    }
+
+    return {
+      validation,
+      classification,
+      request,
+      reused: false,
+      itemState,
+      actionRequired,
+    };
+  }
+
+  private async findReusableGreen(
+    workItemId: string,
+    profileId: string,
+    fingerprint: string,
+  ) {
+    const validations = await this.db.validationRun.findMany({
+      where: {
+        workItemId,
+        profileId,
+        purpose: 'GREEN',
+        resultKind: 'PASS',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return validations.find((validation) => (
+      decodeJson<{ fingerprint?: string }>(validation.summaryJson, {}).fingerprint === fingerprint
+    ));
   }
 }
 

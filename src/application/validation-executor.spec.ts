@@ -5,6 +5,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { CommandRequest, CommandRunner, GitReadPort } from './types.js';
 import {
   classifyCommandResult,
+  classifyRedEvidence,
   createCommandRunner,
   ValidationExecutor,
 } from './validation-executor.js';
@@ -60,6 +61,17 @@ describe('validation executor', () => {
         }, 'GENERIC'),
       ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
     });
+
+    it('distinguishes a behavioral RED from a structural RED', () => {
+      expect(classifyRedEvidence(
+        'Test Suites: 1 failed, 1 total\nTests: 1 failed, 3 total',
+        'JEST',
+      )).toEqual({ redEvidenceKind: 'BEHAVIORAL', testsTotal: 3 });
+      expect(classifyRedEvidence(
+        'Test Suites: 1 failed, 1 total\nTests: 0 total\nCannot find module',
+        'JEST',
+      )).toEqual({ redEvidenceKind: 'STRUCTURAL', testsTotal: 0 });
+    });
   });
 
   it('caps process output and terminates a timed-out child without a shell', async () => {
@@ -90,6 +102,7 @@ describe('validation executor', () => {
     let ledger: WorkflowLedger;
     let executor: ValidationExecutor;
     let requests: CommandRequest[];
+    let currentFingerprint: string;
     let nextResult: {
       exitCode: number | null;
       stdout: string;
@@ -101,12 +114,14 @@ describe('validation executor', () => {
     beforeAll(async () => {
       database = createTestDatabase();
       client = database.client;
+      currentFingerprint = 'fingerprint-1';
       const git: GitReadPort = {
         capture: async () => ({
           branch: 'dev',
           sha: 'sha-1',
           dirty: false,
           changedFiles: [],
+          fingerprint: currentFingerprint,
         }),
       };
       ledger = new WorkflowLedger(client, git);
@@ -201,6 +216,22 @@ describe('validation executor', () => {
       });
     });
 
+    beforeEach(async () => {
+      requests.length = 0;
+      currentFingerprint = 'fingerprint-1';
+      nextResult = {
+        exitCode: 1,
+        stdout: 'Test Suites: 1 failed, 1 total\nTests: 1 failed, 1 total',
+        stderr: '',
+        timedOut: false,
+      };
+      await client.validationRun.deleteMany();
+      await client.workItem.updateMany({
+        where: { key: '01', feature: { key: 'E6' } },
+        data: { state: 'TESTS_DEFINED', currentSha: 'sha-1' },
+      });
+    });
+
     afterAll(async () => {
       await database.close();
     });
@@ -223,6 +254,100 @@ describe('validation executor', () => {
       });
       expect(result.validation.summaryJson).not.toContain('Test Suites:');
       expect(result.validation.logBlob).toBeInstanceOf(Uint8Array);
+      expect(result.classification.redEvidenceKind).toBe('BEHAVIORAL');
+      expect(result.itemState).toBe('RED_CONFIRMED');
+      await expect(client.workItem.findFirstOrThrow({ where: { key: '01' } }))
+        .resolves.toMatchObject({ state: 'RED_CONFIRMED' });
+    });
+
+    it('keeps a structural RED pending until the agent explains it', async () => {
+      nextResult = {
+        exitCode: 1,
+        stdout: 'Test Suites: 1 failed, 1 total\nTests: 0 total\nCannot find module',
+        stderr: '',
+        timedOut: false,
+      };
+
+      const pending = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'RED',
+      });
+      expect(pending.classification.redEvidenceKind).toBe('STRUCTURAL');
+      expect(pending.itemState).toBe('TESTS_DEFINED');
+      expect(pending.actionRequired).toBe('STRUCTURAL_RED_REASON_REQUIRED');
+
+      const confirmed = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'RED',
+        reason: 'o módulo testado ainda não existe',
+      });
+      expect(confirmed.itemState).toBe('RED_CONFIRMED');
+    });
+
+    it('advances GREEN automatically and reuses it for an identical CHECK', async () => {
+      await client.workItem.updateMany({
+        where: { key: '01', feature: { key: 'E6' } },
+        data: { state: 'IMPLEMENTING' },
+      });
+      nextResult = {
+        exitCode: 0,
+        stdout: 'Test Suites: 2 passed, 2 total\nTests: 4 passed, 4 total',
+        stderr: '',
+        timedOut: false,
+      };
+
+      const green = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'GREEN',
+      });
+      expect(green.itemState).toBe('GREEN_CONFIRMED');
+      await ledger.transitionWorkItem({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        to: 'READY_FOR_REVIEW',
+      });
+
+      const callsBeforeCheck = requests.length;
+      const check = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'CHECK',
+      });
+      expect(requests).toHaveLength(callsBeforeCheck);
+      expect(check.reused).toBe(true);
+      expect(check.validation.durationMs).toBe(0);
+      expect(JSON.parse(check.validation.summaryJson)).toMatchObject({
+        reusedFromPurpose: 'GREEN',
+        fingerprint: 'fingerprint-1',
+      });
+
+      currentFingerprint = 'fingerprint-2';
+      const changedCheck = await executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'CHECK',
+      });
+      expect(requests).toHaveLength(callsBeforeCheck + 1);
+      expect(changedCheck.reused).toBe(false);
     });
 
     it('rejects a purpose that does not match the item state before invoking the runner', async () => {
@@ -273,6 +398,10 @@ describe('validation executor', () => {
         stderr: '',
         timedOut: true,
       };
+      await client.workItem.updateMany({
+        where: { key: '01', feature: { key: 'E6' } },
+        data: { state: 'TESTS_DEFINED' },
+      });
       const timeout = await executor.run({
         projectKey: 'carara',
         featureKey: 'E6',

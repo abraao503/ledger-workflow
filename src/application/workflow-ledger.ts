@@ -1,4 +1,4 @@
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import path from 'node:path';
 
 import type {
@@ -36,6 +36,7 @@ import type {
   DefineWorkItemInput,
   RecordRequest,
   RecordValidationInput,
+  ReopenWorkItemInput,
   SubmitReviewInput,
   TransitionWorkItemInput,
   GitReadPort,
@@ -464,6 +465,21 @@ export class WorkflowLedger {
       fail('REVIEW_STATE_INVALID');
     }
 
+    const reviewMode = input.reviewMode ?? 'SELF';
+    const targetState: WorkItemState = input.verdict === 'APPROVED'
+      ? 'APPROVED'
+      : input.verdict === 'CHANGES_REQUIRED'
+        ? 'CHANGES_REQUIRED'
+        : 'BLOCKED';
+    this.stateMachine.assertTransition('READY_FOR_REVIEW', targetState, {
+      reviewApproved: input.verdict === 'APPROVED',
+      changesRequired: input.verdict === 'CHANGES_REQUIRED',
+      hasBlockingFindings: input.findings.some(
+        (finding) => !finding.resolved && ['CRITICAL', 'HIGH'].includes(finding.severity),
+      ),
+      blockReason: input.summary,
+    });
+
     return this.db.$transaction(async (transaction) => {
       const review = await transaction.review.create({
         data: {
@@ -492,11 +508,33 @@ export class WorkflowLedger {
           featureId: item.featureId,
           workItemId: item.id,
           type: 'REVIEW_SUBMITTED',
-          payloadJson: encodeJson({ verdict: input.verdict, reviewer: input.reviewer }),
+          payloadJson: encodeJson({
+            verdict: input.verdict,
+            reviewer: input.reviewer,
+            reviewMode,
+          }),
         },
       });
 
-      return review;
+      const updated = await transaction.workItem.update({
+        where: { id: item.id },
+        data: { state: targetState },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'ITEM_TRANSITIONED',
+          payloadJson: encodeJson({
+            from: 'READY_FOR_REVIEW',
+            to: targetState,
+            reason: `Veredito ${input.verdict} aplicado automaticamente`,
+          }),
+        },
+      });
+
+      return { review, item: updated, reviewMode };
     });
   }
 
@@ -533,11 +571,76 @@ export class WorkflowLedger {
     });
   }
 
+  async reopenWorkItem(input: ReopenWorkItemInput) {
+    if (!input.actor.trim()) {
+      fail('REOPEN_ACTOR_REQUIRED');
+    }
+
+    if (!input.reason.trim()) {
+      fail('REOPEN_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'BLOCKED') {
+      fail('REOPEN_STATE_INVALID');
+    }
+
+    const blockedTransition = await this.db.workflowEvent.findFirst({
+      where: { workItemId: item.id, type: 'ITEM_TRANSITIONED' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const payload = blockedTransition
+      ? decodeJson<{ from?: string; to?: string }>(blockedTransition.payloadJson, {})
+      : {};
+    const target = payload.to === 'BLOCKED' ? payload.from : undefined;
+
+    if (!target || target === 'BLOCKED' || target === 'CLOSED') {
+      fail('REOPEN_TARGET_NOT_FOUND');
+    }
+
+    return this.db.$transaction(async (transaction) => {
+      const updated = await transaction.workItem.update({
+        where: { id: item.id },
+        data: { state: target },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'ITEM_REOPENED',
+          payloadJson: encodeJson({
+            from: 'BLOCKED',
+            to: target,
+            actor: input.actor,
+            reason: input.reason,
+          }),
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async getContext(input: ContextRequest): Promise<WorkflowContext> {
     const item = input.itemKey
       ? await this.requireItem(input.projectKey, input.featureKey ?? '', input.itemKey)
       : await this.findCurrentItem(input.projectKey, input.featureKey);
-    const [authorization, snapshots, criteria, decisions, pendingItems, recentItems, oldSummaries, tests] =
+    const [
+      authorization,
+      snapshots,
+      criteria,
+      decisions,
+      pendingItems,
+      recentItems,
+      oldSummaries,
+      tests,
+      validations,
+      latestReview,
+      latestReviewEvent,
+      currentEvents,
+    ] =
       await Promise.all([
         this.db.authorization.findFirst({
           where: { workItemId: item.id },
@@ -576,6 +679,12 @@ export class WorkflowLedger {
           },
           orderBy: { position: 'desc' },
           take: 2,
+          include: {
+            events: {
+              where: { type: 'ITEM_TRANSITIONED' },
+              orderBy: { createdAt: 'desc' },
+            },
+          },
         }),
         this.db.historySummary.findMany({
           where: { featureId: item.featureId, workItemId: null },
@@ -586,7 +695,32 @@ export class WorkflowLedger {
           where: { workItemId: item.id },
           orderBy: { key: 'asc' },
         }),
+        this.db.validationRun.findMany({
+          where: { workItemId: item.id },
+          include: { profile: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.db.review.findFirst({
+          where: { workItemId: item.id },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.db.workflowEvent.findFirst({
+          where: { workItemId: item.id, type: 'REVIEW_SUBMITTED' },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.db.workflowEvent.findMany({
+          where: { workItemId: item.id, type: 'ITEM_TRANSITIONED' },
+          orderBy: { createdAt: 'desc' },
+        }),
       ]);
+
+    const latestValidations = ['RED', 'GREEN', 'CHECK']
+      .map((purpose) => validations.find((validation) => validation.purpose === purpose))
+      .filter((validation): validation is NonNullable<typeof validation> => Boolean(validation));
+    const reviewEventPayload = latestReviewEvent
+      ? decodeJson<{ reviewMode?: 'SELF' | 'INDEPENDENT' }>(latestReviewEvent.payloadJson, {})
+      : {};
+    const currentClose = findClosedTransition(currentEvents);
 
     return buildWorkflowContext(
       {
@@ -597,6 +731,32 @@ export class WorkflowLedger {
           itemKey: item.key,
           state: item.state,
           nextAllowedTransition: this.nextAllowedTransition(item.state as WorkItemState),
+        },
+        currentEvidence: {
+          outcome: currentClose?.reason ?? item.summary ?? item.title,
+          commitRef: currentClose?.commitSha ?? item.currentSha ?? undefined,
+          validations: latestValidations.map((validation) => {
+            const summary = decodeJson<{
+              reusedFromValidationId?: string;
+              redEvidenceKind?: string;
+            }>(validation.summaryJson, {});
+            return {
+              purpose: validation.purpose,
+              result: validation.resultKind,
+              profileKey: validation.profile.key,
+              durationMs: validation.durationMs,
+              reused: Boolean(summary.reusedFromValidationId),
+              redKind: summary.redEvidenceKind,
+            };
+          }),
+          review: latestReview
+            ? {
+                verdict: latestReview.verdict,
+                mode: reviewEventPayload.reviewMode ?? 'UNSPECIFIED',
+                reviewer: latestReview.reviewer,
+                summary: latestReview.summary,
+              }
+            : undefined,
         },
         authorization: authorization
           ? {
@@ -624,21 +784,38 @@ export class WorkflowLedger {
           description: pending.description,
           blocking: pending.blocking,
         })),
-        recentSlices: recentItems.reverse().map((recent) => ({
-          key: recent.key,
-          state: recent.state,
-          result: recent.state === 'CLOSED' ? 'CLOSED' : recent.state,
-          summary: recent.summary ?? recent.title,
-          commitRefs: [],
-        })),
+        recentSlices: recentItems.reverse().map((recent) => {
+          const close = findClosedTransition(recent.events);
+          return {
+            key: recent.key,
+            state: recent.state,
+            result: recent.state === 'CLOSED' ? 'CLOSED' : recent.state,
+            summary: close?.reason ?? recent.summary ?? recent.title,
+            commitRefs: close?.commitSha
+              ? [close.commitSha]
+              : recent.currentSha
+                ? [recent.currentSha]
+                : [],
+          };
+        }),
         olderSummaries: oldSummaries.map((summary) => ({
           key: summary.scopeKey,
           summary: historySummaryText(summary.deliveredJson, summary.state),
         })),
-        requiredChecks: tests.map((test) => ({
-          key: test.key,
-          description: `${test.purpose}: ${test.name}`,
-        })),
+        requiredChecks: tests.map((test) => {
+          const evidence = validations.find((validation) => (
+            validation.purpose === test.purpose &&
+            (!test.runnerProfileKey || validation.profile.key === test.runnerProfileKey) &&
+            (test.purpose === 'RED'
+              ? validation.resultKind === 'TEST_FAILURE'
+              : validation.resultKind === 'PASS')
+          ));
+          return {
+            key: test.key,
+            description: `${test.purpose}: ${test.name}`,
+            status: evidence ? 'PASSED' : 'PENDING',
+          };
+        }),
       },
       input.maxChars,
     );
@@ -712,11 +889,56 @@ export class WorkflowLedger {
         summary: decodeJson(validation.summaryJson, {}),
         profileKey: validation.profile.key,
         createdAt: validation.createdAt,
+        logAvailable: Boolean(validation.logBlob) && (!validation.logExpiresAt || validation.logExpiresAt > new Date()),
+        logExpiresAt: validation.logExpiresAt,
       })),
       reviews,
       decisions,
       pendingItems,
     };
+  }
+
+  async getValidationLog(input: {
+    projectKey: string;
+    featureKey: string;
+    itemKey: string;
+    validationId: string;
+  }): Promise<{
+    id: string;
+    purpose: string;
+    createdAt: Date;
+    expiresAt: Date | null;
+    text: string;
+  }> {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const validation = await this.db.validationRun.findFirst({
+      where: { id: input.validationId, workItemId: item.id },
+    });
+
+    if (!validation) {
+      fail('VALIDATION_NOT_FOUND');
+    }
+
+    const current = validation as NonNullable<typeof validation>;
+    if (current.logExpiresAt && current.logExpiresAt < new Date()) {
+      fail('VALIDATION_LOG_EXPIRED');
+    }
+
+    if (!current.logBlob) {
+      fail('VALIDATION_LOG_UNAVAILABLE');
+    }
+
+    try {
+      return {
+        id: current.id,
+        purpose: current.purpose,
+        createdAt: current.createdAt,
+        expiresAt: current.logExpiresAt,
+        text: gunzipSync(Buffer.from(current.logBlob as Uint8Array)).toString('utf8'),
+      };
+    } catch {
+      return fail('VALIDATION_LOG_CORRUPT');
+    }
   }
 
   async compactHistory(input: CompactHistoryInput) {
@@ -819,6 +1041,7 @@ export class WorkflowLedger {
           purpose: 'RED',
           resultKind: 'TEST_FAILURE',
         },
+        include: { profile: { include: { repository: true } } },
         orderBy: { createdAt: 'desc' },
       }),
       this.db.validationRun.findFirst({
@@ -827,6 +1050,7 @@ export class WorkflowLedger {
           purpose: 'GREEN',
           resultKind: 'PASS',
         },
+        include: { profile: { include: { repository: true } } },
         orderBy: { createdAt: 'desc' },
       }),
       this.db.review.findFirst({
@@ -836,15 +1060,41 @@ export class WorkflowLedger {
       }),
     ]);
 
+    const evidence = input.to === 'RED_CONFIRMED'
+      ? red
+      : input.to === 'GREEN_CONFIRMED'
+        ? green
+        : undefined;
+    const evidenceSummary = evidence
+      ? decodeJson<{
+          fingerprint?: string;
+          redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
+        }>(evidence.summaryJson, {})
+      : {};
+    const currentSnapshot = evidenceSummary.fingerprint && evidence
+      ? await this.git.capture(evidence.profile.repository.path)
+      : undefined;
+
     return {
       requirementsComplete: item.requirementsComplete,
       authorized: Boolean(authorization),
       testsDefined: tests > 0 || item.tddPolicy !== 'REQUIRED',
       redEvidence: Boolean(red),
       redEvidenceSha: red?.sha,
-      currentSha: item.currentSha ?? red?.sha ?? green?.sha,
+      redEvidenceFingerprint: input.to === 'RED_CONFIRMED'
+        ? evidenceSummary.fingerprint
+        : undefined,
+      redEvidenceKind: input.to === 'RED_CONFIRMED'
+        ? evidenceSummary.redEvidenceKind
+        : undefined,
+      redEvidenceReason: input.reason,
+      currentSha: currentSnapshot?.sha ?? item.currentSha ?? red?.sha ?? green?.sha,
+      currentFingerprint: currentSnapshot?.fingerprint,
       greenEvidence: Boolean(green),
       greenEvidenceSha: green?.sha,
+      greenEvidenceFingerprint: input.to === 'GREEN_CONFIRMED'
+        ? evidenceSummary.fingerprint
+        : undefined,
       tddExceptionReason: input.reason,
       reviewApproved: review?.verdict === 'APPROVED',
       hasBlockingFindings: review?.findings.some(
@@ -952,4 +1202,23 @@ export const isWorkflowApplicationError = (
 function historySummaryText(deliveredJson: string, state: string): string {
   const delivered = decodeJson<{ title?: string; summary?: string }>(deliveredJson, {});
   return delivered.summary ?? delivered.title ?? state;
+}
+
+function findClosedTransition(events: Array<{ payloadJson: string }>): {
+  reason?: string;
+  commitSha?: string;
+} | undefined {
+  for (const event of events) {
+    const payload = decodeJson<{
+      to?: string;
+      reason?: string;
+      commitSha?: string;
+    }>(event.payloadJson, {});
+
+    if (payload.to === 'CLOSED') {
+      return { reason: payload.reason, commitSha: payload.commitSha };
+    }
+  }
+
+  return undefined;
 }

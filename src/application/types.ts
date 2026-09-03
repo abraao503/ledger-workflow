@@ -95,6 +95,7 @@ export type GitSnapshot = {
   sha: string;
   dirty: boolean;
   changedFiles: string[];
+  fingerprint: string;
 };
 
 export type GitReadPort = {
@@ -136,6 +137,7 @@ export type ExecuteValidationInput = {
   repositoryKey: string;
   profileKey: string;
   purpose: 'RED' | 'GREEN' | 'CHECK';
+  reason?: string;
 };
 
 export type CommandRequest = {
@@ -173,6 +175,7 @@ export type SubmitReviewInput = {
   featureKey: string;
   itemKey: string;
   reviewer: string;
+  reviewMode?: 'SELF' | 'INDEPENDENT';
   verdict: 'APPROVED' | 'CHANGES_REQUIRED' | 'BLOCKED';
   summary: string;
   findings: ReviewFindingInput[];
@@ -185,6 +188,14 @@ export type TransitionWorkItemInput = {
   to: string;
   reason?: string;
   commitSha?: string;
+};
+
+export type ReopenWorkItemInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  actor: string;
+  reason: string;
 };
 
 export type ContextRequest = {
@@ -205,4 +216,146 @@ export type CompactHistoryInput = {
   featureKey: string;
   activeItemKey: string;
   keepRecent?: number;
+};
+
+export type DashboardSelection = {
+  projectKey?: string;
+  featureKey?: string;
+  itemKey?: string;
+};
+
+export type DashboardCatalogItem = {
+  key: string;
+  title: string;
+  phaseKey: string;
+  state: string;
+  position: number;
+};
+
+export type DashboardCatalogFeature = {
+  key: string;
+  name: string;
+  status: string;
+  currentPhaseKey?: string;
+  items: DashboardCatalogItem[];
+};
+
+export type DashboardCatalogProject = {
+  key: string;
+  name: string;
+  status: string;
+  features: DashboardCatalogFeature[];
+};
+
+export type DashboardActionId =
+  | 'MARK_READY'
+  | 'AUTHORIZE'
+  | 'MARK_TESTS_DEFINED'
+  | 'RUN_RED'
+  | 'APPROVE_TDD_EXCEPTION'
+  | 'START_IMPLEMENTING'
+  | 'RUN_GREEN'
+  | 'MARK_READY_FOR_REVIEW'
+  | 'SUBMIT_REVIEW'
+  | 'RETURN_TO_TESTS'
+  | 'CLOSE'
+  | 'BLOCK'
+  | 'REOPEN'
+  | 'RUN_CHECK'
+  | 'REINSPECT'
+  | 'COMPACT_HISTORY';
+
+export type DashboardAction = {
+  id: DashboardActionId;
+  label: string;
+  kind: 'primary' | 'secondary' | 'danger' | 'maintenance';
+  enabled: boolean;
+  reason?: string;
+  options?: {
+    repositoryKeys?: string[];
+    profileKeys?: string[];
+  };
+};
+
+export type DashboardHealth = {
+  ok: boolean;
+  database: 'sqlite';
+  journalMode: string;
+  serverTime: string;
+};
+
+export type DashboardValidation = {
+  id: string;
+  purpose: string;
+  status: string;
+  resultKind: string;
+  exitCode: number | null;
+  sha: string;
+  durationMs: number;
+  summary: Record<string, unknown>;
+  profileKey: string;
+  createdAt: string;
+  logAvailable: boolean;
+  logExpiresAt?: string;
+};
+
+export type DashboardGate = {
+  key: string;
+  label: string;
+  states: string[];
+  status: 'complete' | 'active' | 'pending' | 'blocked';
+};
+
+export type DashboardSnapshot = {
+  selection: {
+    projectKey: string;
+    featureKey: string;
+    itemKey: string;
+    view: string;
+  };
+  project: { key: string; name: string; rootPath?: string };
+  feature: { key: string; name: string; summary: string; status: string };
+  overview: {
+    repositories: number;
+    cleanRepositories: number;
+    activeFeatures: number;
+    openItems: number;
+    walMode: string;
+  };
+  item: {
+    key: string;
+    title: string;
+    phaseKey: string;
+    kind: string;
+    state: string;
+    summary?: string | null;
+    tddPolicy: string;
+    currentSha?: string | null;
+    requirementsComplete: boolean;
+  };
+  gates: DashboardGate[];
+  context: Record<string, unknown>;
+  record: Record<string, unknown>;
+  validations: DashboardValidation[];
+  pendingItems: Array<{
+    key: string;
+    description: string;
+    blocking: boolean;
+    resolved: boolean;
+  }>;
+  recentSlices: Array<{
+    key: string;
+    title: string;
+    state: string;
+    summary?: string | null;
+    currentSha?: string | null;
+    position: number;
+  }>;
+  repositories: Array<{
+    key: string;
+    expectedBranch?: string | null;
+    profiles: Array<{ key: string; parser: string }>;
+  }>;
+  availableActions: DashboardAction[];
+  health: DashboardHealth;
 };

@@ -18,6 +18,7 @@ describe('WorkflowLedger', () => {
         sha: 'sha-1',
         dirty: false,
         changedFiles: [],
+        fingerprint: 'fingerprint-1',
       }),
     };
     ledger = new WorkflowLedger(client, fakeGit);
@@ -179,21 +180,17 @@ describe('WorkflowLedger', () => {
       itemKey: '05',
       to: 'READY_FOR_REVIEW',
     });
-    await ledger.submitReview({
+    const reviewed = await ledger.submitReview({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       reviewer: 'reviewer',
+      reviewMode: 'SELF',
       verdict: 'APPROVED',
       summary: 'Critérios atendidos',
       findings: [],
     });
-    await ledger.transitionWorkItem({
-      projectKey: 'carara',
-      featureKey: 'E6',
-      itemKey: '05',
-      to: 'APPROVED',
-    });
+    expect(reviewed.item.state).toBe('APPROVED');
     const closed = await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
@@ -212,5 +209,14 @@ describe('WorkflowLedger', () => {
     expect(context.acceptanceCriteria).toEqual([
       { key: 'AC-01', statement: 'Ownership e versão são revalidados' },
     ]);
+    expect(context.currentEvidence).toMatchObject({
+      outcome: expect.any(String),
+      commitRef: 'sha-2',
+      review: {
+        verdict: 'APPROVED',
+        mode: 'SELF',
+        reviewer: 'reviewer',
+      },
+    });
   });
 });

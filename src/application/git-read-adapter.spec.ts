@@ -16,23 +16,52 @@ describe('GitReadAdapter', () => {
           return 'abc123\n';
         }
 
-        return ' M src/changed.ts\n?? test/new.spec.ts\nR  old.ts -> src/new.ts\n';
+        if (commandLine.includes('status --porcelain')) {
+          return ' M src/changed.ts\n?? test/new.spec.ts\nR  old.ts -> src/new.ts\n';
+        }
+
+        if (commandLine.includes('diff --no-ext-diff')) {
+          return 'diff --git a/src/changed.ts b/src/changed.ts\n+changed\n';
+        }
+
+        if (commandLine.includes('ls-files --others')) {
+          return 'test/new.spec.ts\0';
+        }
+
+        if (commandLine.includes('hash-object')) {
+          return 'new-file-hash\n';
+        }
+
+        return '';
       },
     };
 
     const snapshot = await new GitReadAdapter(command).capture('/workspace/api');
 
-    expect(snapshot).toEqual({
+    expect(snapshot).toMatchObject({
       branch: 'dev',
       sha: 'abc123',
       dirty: true,
       changedFiles: ['src/changed.ts', 'test/new.spec.ts', 'src/new.ts'],
     });
+    expect(snapshot.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(calls).toEqual([
       { args: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd: '/workspace/api' },
       { args: ['git', 'rev-parse', 'HEAD'], cwd: '/workspace/api' },
       {
         args: ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'diff', '--no-ext-diff', '--binary', 'HEAD', '--'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'ls-files', '--others', '--exclude-standard', '-z'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'hash-object', '--no-filters', '--', 'test/new.spec.ts'],
         cwd: '/workspace/api',
       },
     ]);
@@ -59,15 +88,16 @@ describe('GitReadAdapter', () => {
         if (args[2] === 'HEAD') {
           return 'abc123\n';
         }
-        return '  \n\n';
+        return args.includes('status') ? '  \n\n' : '';
       },
     };
 
-    await expect(new GitReadAdapter(command).capture('/workspace/api')).resolves.toEqual({
+    await expect(new GitReadAdapter(command).capture('/workspace/api')).resolves.toMatchObject({
       branch: 'dev',
       sha: 'abc123',
       dirty: false,
       changedFiles: [],
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
 

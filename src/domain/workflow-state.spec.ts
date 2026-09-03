@@ -12,8 +12,11 @@ const baseContext = (): TransitionContext => ({
   redEvidence: true,
   redEvidenceSha: 'sha-1',
   currentSha: 'sha-1',
+  redEvidenceFingerprint: 'fingerprint-1',
+  currentFingerprint: 'fingerprint-1',
   greenEvidence: true,
   greenEvidenceSha: 'sha-1',
+  greenEvidenceFingerprint: 'fingerprint-1',
   reviewApproved: true,
   hasBlockingFindings: false,
   commitSha: 'sha-1',
@@ -85,12 +88,43 @@ describe('WorkflowStateMachine', () => {
   });
 
   it('rejects GREEN evidence recorded against another SHA', () => {
+    const legacyContext = {
+      ...baseContext(),
+      currentFingerprint: undefined,
+      greenEvidenceFingerprint: undefined,
+    };
     expect(() =>
       machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
-        ...baseContext(),
+        ...legacyContext,
         currentSha: 'sha-2',
       }),
     ).toThrow('GREEN_EVIDENCE_STALE');
+  });
+
+  it('rejects evidence from another worktree even when HEAD is unchanged', () => {
+    expect(() =>
+      machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
+        ...baseContext(),
+        currentFingerprint: 'fingerprint-2',
+      }),
+    ).toThrow('GREEN_EVIDENCE_STALE');
+  });
+
+  it('requires an explanation for a structural RED', () => {
+    expect(() =>
+      machine.assertTransition('TESTS_DEFINED', 'RED_CONFIRMED', {
+        ...baseContext(),
+        redEvidenceKind: 'STRUCTURAL',
+      }),
+    ).toThrow('STRUCTURAL_RED_REASON_REQUIRED');
+
+    expect(() =>
+      machine.assertTransition('TESTS_DEFINED', 'RED_CONFIRMED', {
+        ...baseContext(),
+        redEvidenceKind: 'STRUCTURAL',
+        redEvidenceReason: 'o módulo ainda não existe',
+      }),
+    ).not.toThrow();
   });
 
   it('does not approve a review with blocking findings', () => {
@@ -109,5 +143,11 @@ describe('WorkflowStateMachine', () => {
         commitSha: undefined,
       }),
     ).toThrow('COMMIT_REQUIRED');
+  });
+
+  it('keeps a closed item immutable even when a block reason is supplied', () => {
+    expect(() => machine.assertTransition('CLOSED', 'BLOCKED', {
+      blockReason: 'regressão detectada',
+    })).toThrow('CLOSED_ITEM_IMMUTABLE');
   });
 });

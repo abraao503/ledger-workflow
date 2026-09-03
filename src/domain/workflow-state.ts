@@ -22,10 +22,15 @@ export type TransitionContext = {
   testsDefined?: boolean;
   redEvidence?: boolean;
   redEvidenceSha?: string;
+  redEvidenceFingerprint?: string;
+  redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
+  redEvidenceReason?: string;
   currentSha?: string;
+  currentFingerprint?: string;
   tddExceptionReason?: string;
   greenEvidence?: boolean;
   greenEvidenceSha?: string;
+  greenEvidenceFingerprint?: string;
   reviewApproved?: boolean;
   hasBlockingFindings?: boolean;
   changesRequired?: boolean;
@@ -58,6 +63,10 @@ export class WorkflowStateMachine {
     }
 
     if (to === 'BLOCKED') {
+      if (from === 'CLOSED') {
+        transitionError('CLOSED_ITEM_IMMUTABLE');
+      }
+
       if (!context.blockReason?.trim()) {
         transitionError('BLOCK_REASON_REQUIRED');
       }
@@ -98,12 +107,20 @@ export class WorkflowStateMachine {
         transitionError('RED_EVIDENCE_REQUIRED');
       }
 
-      if (
-        !context.currentSha ||
-        !context.redEvidenceSha ||
-        context.redEvidenceSha !== context.currentSha
-      ) {
+      if (!evidenceMatchesCurrent(
+        context.redEvidenceFingerprint,
+        context.currentFingerprint,
+        context.redEvidenceSha,
+        context.currentSha,
+      )) {
         transitionError('RED_EVIDENCE_STALE');
+      }
+
+      if (
+        context.redEvidenceKind === 'STRUCTURAL' &&
+        !context.redEvidenceReason?.trim()
+      ) {
+        transitionError('STRUCTURAL_RED_REASON_REQUIRED');
       }
 
       return;
@@ -129,11 +146,12 @@ export class WorkflowStateMachine {
         transitionError('GREEN_EVIDENCE_REQUIRED');
       }
 
-      if (
-        !context.currentSha ||
-        !context.greenEvidenceSha ||
-        context.greenEvidenceSha !== context.currentSha
-      ) {
+      if (!evidenceMatchesCurrent(
+        context.greenEvidenceFingerprint,
+        context.currentFingerprint,
+        context.greenEvidenceSha,
+        context.currentSha,
+      )) {
         transitionError('GREEN_EVIDENCE_STALE');
       }
 
@@ -182,4 +200,21 @@ export class WorkflowStateMachine {
 
     transitionError(`INVALID_TRANSITION:${from}:${to}`);
   }
+}
+
+function evidenceMatchesCurrent(
+  evidenceFingerprint: string | undefined,
+  currentFingerprint: string | undefined,
+  evidenceSha: string | undefined,
+  currentSha: string | undefined,
+): boolean {
+  if (evidenceFingerprint || currentFingerprint) {
+    return Boolean(
+      evidenceFingerprint &&
+      currentFingerprint &&
+      evidenceFingerprint === currentFingerprint,
+    );
+  }
+
+  return Boolean(evidenceSha && currentSha && evidenceSha === currentSha);
 }

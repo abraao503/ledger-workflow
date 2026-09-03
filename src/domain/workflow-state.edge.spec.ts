@@ -12,8 +12,11 @@ describe('WorkflowStateMachine edge cases', () => {
     redEvidence: true,
     redEvidenceSha: 'sha-1',
     currentSha: 'sha-1',
+    redEvidenceFingerprint: 'fingerprint-1',
+    currentFingerprint: 'fingerprint-1',
     greenEvidence: true,
     greenEvidenceSha: 'sha-1',
+    greenEvidenceFingerprint: 'fingerprint-1',
     reviewApproved: true,
     hasBlockingFindings: false,
     commitSha: 'commit-1',
@@ -49,6 +52,8 @@ describe('WorkflowStateMachine edge cases', () => {
     })).toThrow('RED_EVIDENCE_STALE');
     expect(() => machine.assertTransition('TESTS_DEFINED', 'RED_CONFIRMED', {
       ...complete,
+      redEvidenceFingerprint: undefined,
+      currentFingerprint: undefined,
       redEvidenceSha: 'sha-2',
     })).toThrow('RED_EVIDENCE_STALE');
   });
@@ -60,6 +65,8 @@ describe('WorkflowStateMachine edge cases', () => {
     })).toThrow('GREEN_EVIDENCE_REQUIRED');
     expect(() => machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
       ...complete,
+      greenEvidenceFingerprint: undefined,
+      currentFingerprint: undefined,
       greenEvidenceSha: 'sha-2',
     })).toThrow('GREEN_EVIDENCE_STALE');
   });

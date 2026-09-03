@@ -13,12 +13,15 @@ describe('WorkflowLedger edge cases', () => {
     sha: string;
     dirty: boolean;
     changedFiles: string[];
+    fingerprint: string;
   };
 
   beforeAll(async () => {
     database = createTestDatabase();
     client = database.client;
-    snapshot = { branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [] };
+    snapshot = {
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+    };
     const git: GitReadPort = { capture: async () => snapshot };
     ledger = new WorkflowLedger(client, git);
 
@@ -52,7 +55,15 @@ describe('WorkflowLedger edge cases', () => {
       summary: 'Edge cases',
     });
 
-    for (const itemKey of ['dirty', 'branch', 'duplicate', 'empty', 'review']) {
+    for (const itemKey of [
+      'dirty',
+      'branch',
+      'duplicate',
+      'empty',
+      'review',
+      'review-changes',
+      'review-blocked',
+    ]) {
       await defineReadyItem(itemKey);
     }
   });
@@ -73,17 +84,25 @@ describe('WorkflowLedger edge cases', () => {
   });
 
   it('refuses authorization with a dirty baseline', async () => {
-    snapshot = { branch: 'dev', sha: 'sha-1', dirty: true, changedFiles: ['src/changed.ts'] };
+    snapshot = {
+      branch: 'dev', sha: 'sha-1', dirty: true, changedFiles: ['src/changed.ts'], fingerprint: 'fingerprint-dirty',
+    };
 
     await expect(authorize('dirty')).rejects.toMatchObject({ code: 'DIRTY_BASELINE' });
     expect(await client.authorization.count()).toBe(0);
-    snapshot = { branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [] };
+    snapshot = {
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+    };
   });
 
   it('refuses an unexpected branch, duplicate repository keys and an empty baseline', async () => {
-    snapshot = { branch: 'feature', sha: 'sha-1', dirty: false, changedFiles: [] };
+    snapshot = {
+      branch: 'feature', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-branch',
+    };
     await expect(authorize('branch')).rejects.toMatchObject({ code: 'EXPECTED_BRANCH_MISMATCH' });
-    snapshot = { branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [] };
+    snapshot = {
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+    };
 
     await expect(authorize('duplicate', ['api', 'api']))
       .rejects.toMatchObject({ code: 'BASELINE_REPOSITORY_DUPLICATE' });
@@ -102,6 +121,62 @@ describe('WorkflowLedger edge cases', () => {
       summary: 'prematuro',
       findings: [],
     })).rejects.toMatchObject({ code: 'REVIEW_STATE_INVALID' });
+  });
+
+  it.each([
+    ['review-changes', 'CHANGES_REQUIRED', 'CHANGES_REQUIRED'],
+    ['review-blocked', 'BLOCKED', 'BLOCKED'],
+  ] as const)('applies a %s review verdict without a second transition', async (
+    itemKey,
+    verdict,
+    expectedState,
+  ) => {
+    await client.workItem.updateMany({
+      where: { key: itemKey, feature: { key: 'F1' } },
+      data: { state: 'READY_FOR_REVIEW' },
+    });
+
+    const result = await ledger.submitReview({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey,
+      reviewer: 'fresh-reviewer',
+      reviewMode: 'INDEPENDENT',
+      verdict,
+      summary: `veredito ${verdict}`,
+      findings: verdict === 'CHANGES_REQUIRED'
+        ? [{
+            severity: 'MEDIUM',
+            location: 'src/example.ts:1',
+            evidence: 'regra ausente',
+            risk: 'comportamento incompleto',
+            correction: 'implementar regra',
+            testNeeded: 'caminho negativo',
+          }]
+        : [],
+    });
+
+    expect(result).toMatchObject({
+      reviewMode: 'INDEPENDENT',
+      item: { state: expectedState },
+    });
+  });
+
+  it('reopens a blocked item at its previous state and records the operator', async () => {
+    const reopened = await ledger.reopenWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'review-blocked',
+      actor: 'operator',
+      reason: 'correção aplicada no branch isolado',
+    });
+
+    expect(reopened.state).toBe('READY_FOR_REVIEW');
+    const event = await client.workflowEvent.findFirstOrThrow({
+      where: { workItemId: reopened.id, type: 'ITEM_REOPENED' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(event.payloadJson).toContain('operator');
   });
 
   it('rejects unsafe or out-of-range validation profiles', async () => {
@@ -209,6 +284,8 @@ describe('WorkflowLedger edge cases', () => {
 
     expect(result.compact).toEqual(['dirty', 'branch']);
     expect(result.keepDetailed).toEqual([
+      'review-changes',
+      'review-blocked',
       'duplicate',
       'empty',
       'review',
@@ -259,11 +336,23 @@ describe('WorkflowLedger edge cases', () => {
       itemKey: 'review',
     });
     expect(JSON.stringify(record)).not.toContain('raw log must stay out of context');
+    await expect(ledger.getValidationLog({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'review',
+      validationId: validation.id,
+    })).resolves.toMatchObject({ text: 'raw log must stay out of context' });
 
     await client.validationRun.update({
       where: { id: validation.id },
       data: { logExpiresAt: new Date(0) },
     });
+    await expect(ledger.getValidationLog({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'review',
+      validationId: validation.id,
+    })).rejects.toMatchObject({ code: 'VALIDATION_LOG_EXPIRED' });
     expect(await ledger.purgeExpiredLogs(new Date()).then((result) => result.count)).toBe(1);
     expect((await client.validationRun.findUniqueOrThrow({ where: { id: validation.id } })).logBlob)
       .toBeNull();

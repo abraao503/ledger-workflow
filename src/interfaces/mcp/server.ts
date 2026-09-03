@@ -100,7 +100,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   server.registerTool(
     'workflow_validate',
     {
-      description: 'Executa um perfil allowlistado e registra a validação RED, GREEN ou CHECK.',
+      description: 'Executa RED/GREEN/CHECK sem intervenção do usuário; RED/GREEN válidos avançam o estado e CHECK idêntico reutiliza o GREEN.',
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string(),
@@ -108,6 +108,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         repositoryKey: z.string(),
         profileKey: z.string(),
         purpose: z.enum(['RED', 'GREEN', 'CHECK']),
+        reason: z.string().optional().describe('Obrigatório quando o RED é estrutural.'),
       },
     },
     async (input) => runTool(async () => {
@@ -119,6 +120,9 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         sha: result.validation.sha,
         durationMs: result.validation.durationMs,
         classification: result.classification,
+        reused: result.reused,
+        itemState: result.itemState,
+        actionRequired: result.actionRequired,
       };
     }),
   );
@@ -140,14 +144,30 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_reopen',
+    {
+      description: 'Reabre uma fatia bloqueada no estado anterior e registra ator e justificativa.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        actor: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.reopenWorkItem(input)),
+  );
+
+  server.registerTool(
     'workflow_review',
     {
-      description: 'Registra a revisão e seus achados para uma fatia.',
+      description: 'Registra SELF ou INDEPENDENT review e aplica o veredito ao estado automaticamente.',
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string(),
         itemKey: z.string(),
         reviewer: z.string(),
+        reviewMode: z.enum(['SELF', 'INDEPENDENT']).default('SELF'),
         verdict: z.enum(['APPROVED', 'CHANGES_REQUIRED', 'BLOCKED']),
         summary: z.string(),
         findings: z.array(z.object({

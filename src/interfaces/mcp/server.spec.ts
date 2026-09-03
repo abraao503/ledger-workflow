@@ -44,6 +44,7 @@ describe('workflow MCP server', () => {
       'workflow_compact_history',
       'workflow_define_item',
       'workflow_record',
+      'workflow_reopen',
       'workflow_review',
       'workflow_transition',
       'workflow_validate',
