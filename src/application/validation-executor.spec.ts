@@ -280,16 +280,16 @@ describe('validation executor', () => {
       expect(pending.itemState).toBe('TESTS_DEFINED');
       expect(pending.actionRequired).toBe('STRUCTURAL_RED_REASON_REQUIRED');
 
-      const confirmed = await executor.run({
+      const callsBeforeConfirmation = requests.length;
+      const confirmed = await ledger.confirmStructuralRed({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
-        repositoryKey: 'api',
-        profileKey: 'related',
-        purpose: 'RED',
+        validationId: pending.validation.id,
         reason: 'o módulo testado ainda não existe',
       });
-      expect(confirmed.itemState).toBe('RED_CONFIRMED');
+      expect(confirmed.state).toBe('RED_CONFIRMED');
+      expect(requests).toHaveLength(callsBeforeConfirmation);
     });
 
     it('advances GREEN automatically and reuses it for an identical CHECK', async () => {
@@ -360,6 +360,24 @@ describe('validation executor', () => {
         repositoryKey: 'api',
         profileKey: 'related',
         purpose: 'GREEN',
+      })).rejects.toMatchObject({ code: 'VALIDATION_PURPOSE_STATE_INVALID' });
+      expect(requests).toHaveLength(callsBefore);
+    });
+
+    it('requires returning to TESTS_DEFINED before running RED after review changes', async () => {
+      await client.workItem.updateMany({
+        where: { key: '01', feature: { key: 'E6' } },
+        data: { state: 'CHANGES_REQUIRED' },
+      });
+      const callsBefore = requests.length;
+
+      await expect(executor.run({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'RED',
       })).rejects.toMatchObject({ code: 'VALIDATION_PURPOSE_STATE_INVALID' });
       expect(requests).toHaveLength(callsBefore);
     });

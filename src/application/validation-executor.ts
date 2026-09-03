@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { PrismaClient } from '@prisma/client';
 
+import { WorkflowTransitionError } from '../domain/workflow-state.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail } from './errors.js';
 import { decodeJson } from './json.js';
@@ -119,6 +120,17 @@ export class ValidationExecutor {
     const currentItem = item as NonNullable<typeof item>;
     const currentRepository = repository as NonNullable<typeof repository>;
     const currentProfile = profile as NonNullable<typeof profile>;
+    const authorizedRepository = await this.db.repositorySnapshot.findFirst({
+      where: {
+        workItemId: currentItem.id,
+        repositoryId: currentRepository.id,
+      },
+    });
+
+    if (!authorizedRepository) {
+      fail('VALIDATION_REPOSITORY_NOT_AUTHORIZED');
+    }
+
     assertPurposeState(input.purpose, currentItem.state);
 
     const repositoryPath = path.resolve(currentRepository.path);
@@ -147,6 +159,7 @@ export class ValidationExecutor {
         currentItem.id,
         currentProfile.id,
         snapshotBefore.fingerprint,
+        snapshotBefore.contentFingerprint,
       );
 
       if (reusableGreen) {
@@ -166,6 +179,9 @@ export class ValidationExecutor {
             parser: currentProfile.parser,
             profileKey: input.profileKey,
             fingerprint: snapshotBefore.fingerprint,
+            ...(snapshotBefore.contentFingerprint
+              ? { contentFingerprint: snapshotBefore.contentFingerprint }
+              : {}),
             dirty: snapshotBefore.dirty,
             changedFileCount: snapshotBefore.changedFiles.length,
             coveredTestKeys: coveredTests.map((test) => test.key),
@@ -179,6 +195,7 @@ export class ValidationExecutor {
           classification: { status: 'COMPLETED', resultKind: 'PASS' } as ValidationClassification,
           reused: true,
           itemState: currentItem.state,
+          pendingRepositoryKeys: undefined,
         };
       }
     }
@@ -235,6 +252,9 @@ export class ValidationExecutor {
         dirty: snapshotAfter.dirty,
         changedFileCount: snapshotAfter.changedFiles.length,
         fingerprint: snapshotAfter.fingerprint,
+        ...(snapshotAfter.contentFingerprint
+          ? { contentFingerprint: snapshotAfter.contentFingerprint }
+          : {}),
         worktreeChangedDuringValidation: worktreeChanged,
         coveredTestKeys: coveredTests.map((test) => test.key),
         redEvidenceKind: classification.redEvidenceKind,
@@ -245,6 +265,7 @@ export class ValidationExecutor {
 
     let itemState = currentItem.state;
     let actionRequired: string | undefined;
+    let pendingRepositoryKeys: string[] | undefined;
 
     if (input.purpose === 'RED' && classification.resultKind === 'TEST_FAILURE') {
       if (classification.redEvidenceKind === 'STRUCTURAL' && !input.reason?.trim()) {
@@ -262,14 +283,25 @@ export class ValidationExecutor {
     }
 
     if (input.purpose === 'GREEN' && classification.resultKind === 'PASS') {
-      const updated = await this.ledger.transitionWorkItem({
-        projectKey: input.projectKey,
-        featureKey: input.featureKey,
-        itemKey: input.itemKey,
-        to: 'GREEN_CONFIRMED',
-        reason: 'GREEN confirmado automaticamente',
-      });
-      itemState = updated.state;
+      try {
+        const updated = await this.ledger.transitionWorkItem({
+          projectKey: input.projectKey,
+          featureKey: input.featureKey,
+          itemKey: input.itemKey,
+          to: 'GREEN_CONFIRMED',
+          reason: 'GREEN confirmado automaticamente',
+        });
+        itemState = updated.state;
+      } catch (error) {
+        if (!(error instanceof WorkflowTransitionError) || error.code !== 'GREEN_EVIDENCE_INCOMPLETE') {
+          throw error;
+        }
+
+        actionRequired = 'GREEN_REPOSITORIES_PENDING';
+        pendingRepositoryKeys = Array.isArray(error.details?.pendingRepositoryKeys)
+          ? error.details.pendingRepositoryKeys.filter((key): key is string => typeof key === 'string')
+          : undefined;
+      }
     }
 
     return {
@@ -279,6 +311,7 @@ export class ValidationExecutor {
       reused: false,
       itemState,
       actionRequired,
+      pendingRepositoryKeys,
     };
   }
 
@@ -286,6 +319,7 @@ export class ValidationExecutor {
     workItemId: string,
     profileId: string,
     fingerprint: string,
+    contentFingerprint?: string,
   ) {
     const validations = await this.db.validationRun.findMany({
       where: {
@@ -297,9 +331,16 @@ export class ValidationExecutor {
       orderBy: { createdAt: 'desc' },
     });
 
-    return validations.find((validation) => (
-      decodeJson<{ fingerprint?: string }>(validation.summaryJson, {}).fingerprint === fingerprint
-    ));
+    return validations.find((validation) => {
+      const summary = decodeJson<{ fingerprint?: string; contentFingerprint?: string }>(
+        validation.summaryJson,
+        {},
+      );
+
+      return summary.contentFingerprint && contentFingerprint
+        ? summary.contentFingerprint === contentFingerprint
+        : summary.fingerprint === fingerprint;
+    });
   }
 }
 
@@ -403,8 +444,8 @@ function isWithin(root: string, candidate: string): boolean {
 }
 
 function assertPurposeState(purpose: ExecuteValidationInput['purpose'], state: string): void {
-  if (purpose === 'RED' && !['TESTS_DEFINED', 'CHANGES_REQUIRED'].includes(state)) {
-    fail('VALIDATION_PURPOSE_STATE_INVALID', 'RED exige TESTS_DEFINED ou CHANGES_REQUIRED');
+  if (purpose === 'RED' && state !== 'TESTS_DEFINED') {
+    fail('VALIDATION_PURPOSE_STATE_INVALID', 'RED exige TESTS_DEFINED; retorne para esse estado após CHANGES_REQUIRED');
   }
 
   if (purpose === 'GREEN' && state !== 'IMPLEMENTING') {

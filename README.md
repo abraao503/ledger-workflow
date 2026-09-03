@@ -26,7 +26,10 @@ O diretório `.workflow/` não deve ser versionado.
 rtk node dist/interfaces/cli/main.js context --project carara --feature E6 --item 06
 rtk node dist/interfaces/cli/main.js item authorize --help
 rtk node dist/interfaces/cli/main.js validate run --help
+rtk node dist/interfaces/cli/main.js validate log --help
+rtk node dist/interfaces/cli/main.js validate confirm-red --help
 rtk node dist/interfaces/cli/main.js item transition --help
+rtk node dist/interfaces/cli/main.js item invalidate-green --help
 ```
 
 O primeiro comando é a consulta canônica para descobrir a fatia ativa, seu
@@ -44,13 +47,21 @@ transições ou validações intermediárias.
 1. consultar o contexto e confirmar a autorização;
 2. escrever os testes e avançar para `TESTS_DEFINED`;
 3. executar `validate run --purpose RED`; um RED comportamental avança para
-   `RED_CONFIRMED` automaticamente, enquanto um RED estrutural exige `--reason`;
-4. avançar para `IMPLEMENTING`, implementar e executar `--purpose GREEN`; um
-   resultado válido avança automaticamente para `GREEN_CONFIRMED`;
-5. avançar para `READY_FOR_REVIEW` e registrar a revisão como `SELF` ou
+   `RED_CONFIRMED` automaticamente, enquanto um RED estrutural exige uma
+   justificativa; se ela não foi informada, use `validate confirm-red` com o id
+   retornado, sem repetir a execução;
+4. avançar para `IMPLEMENTING`, implementar e executar `--purpose GREEN` em
+   cada repositório autorizado; o primeiro resultado parcial permanece em
+   `IMPLEMENTING` e informa os repositórios pendentes, enquanto o conjunto
+   completo avança automaticamente para `GREEN_CONFIRMED`;
+5. manter a worktree congelada depois do GREEN; se ela mudar, use
+   `item invalidate-green` e execute um novo GREEN;
+6. avançar para `READY_FOR_REVIEW` e registrar a revisão como `SELF` ou
    `INDEPENDENT`; o veredito já move o item para `APPROVED`,
    `CHANGES_REQUIRED` ou `BLOCKED`;
-6. após o commit, fechar o item com o SHA.
+7. se o veredito exigir mudanças, retorne para `TESTS_DEFINED` antes de
+   executar o RED novamente; após a aprovação, faça o commit e feche o item
+   com o SHA.
 
 `RED` prova que os testes detectam a ausência do comportamento. `GREEN` prova
 que o mesmo delta passou após a implementação. `CHECK` representa uma
@@ -58,9 +69,23 @@ verificação adicional: quando usa o mesmo perfil e a mesma worktree do GREEN,
 o ledger reaproveita a evidência sem executar a suíte novamente. Uma mudança
 na worktree invalida o reaproveitamento.
 
-As evidências usam um fingerprint de `HEAD`, diff e arquivos novos, não apenas
-o SHA do commit. O contexto curto mostra o resultado corrente, validações,
-modo de revisão e commit, além das duas fatias anteriores.
+`validate run` inclui um trecho limitado do log para falhas. O log completo
+pode ser lido sem nova execução com:
+
+```bash
+rtk node dist/interfaces/cli/main.js validate log \
+  --project carara --feature E6 --item 06 --validation <id> --raw
+```
+
+O mesmo recurso está disponível no MCP como `workflow_validation_log`.
+`workflow_confirm_structural_red` confirma um RED estrutural já registrado e
+`workflow_invalidate_green` retorna uma evidência GREEN obsoleta para
+`IMPLEMENTING`.
+
+As evidências usam um fingerprint de execução (HEAD, diff e arquivos novos) e
+um fingerprint do conteúdo efetivo da worktree, que permanece estável quando o
+mesmo conteúdo é commitado. O contexto curto mostra o resultado corrente,
+validações, modo de revisão e commit, além das duas fatias anteriores.
 
 O comando `import` recebe somente um JSON com `schemaVersion: 1` e `importKey`.
 A mesma chave é aplicada uma única vez, permitindo reexecução segura. Essa
@@ -91,8 +116,9 @@ servidor `workflow` com aprovação para operações de escrita.
 
 As ferramentas principais são `workflow_context`, `workflow_record`,
 `workflow_define_item`, `workflow_authorize`, `workflow_validate`,
-`workflow_transition`, `workflow_reopen`, `workflow_review` e
-`workflow_compact_history`.
+`workflow_validation_log`, `workflow_confirm_structural_red`,
+`workflow_transition`, `workflow_reopen`, `workflow_invalidate_green`,
+`workflow_review` e `workflow_compact_history`.
 
 ## Dashboard web local
 

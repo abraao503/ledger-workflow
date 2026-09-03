@@ -30,6 +30,13 @@ describe('workflow MCP server', () => {
             requiredChecks: [],
           };
         },
+        getValidationLog: async () => ({
+          id: 'validation-1',
+          purpose: 'RED',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          expiresAt: new Date('2026-01-08T00:00:00.000Z'),
+          text: 'raw output',
+        }),
       },
     } as unknown as WorkflowApp;
     const server = createMcpServer(app);
@@ -42,13 +49,16 @@ describe('workflow MCP server', () => {
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'workflow_authorize',
       'workflow_compact_history',
+      'workflow_confirm_structural_red',
       'workflow_define_item',
+      'workflow_invalidate_green',
       'workflow_record',
       'workflow_reopen',
       'workflow_review',
       'workflow_transition',
       'workflow_validate',
       'workflow_context',
+      'workflow_validation_log',
     ].sort());
     const result = await client.callTool({
       name: 'workflow_context',
@@ -60,6 +70,23 @@ describe('workflow MCP server', () => {
       {
         type: 'text',
         text: expect.stringContaining('"itemKey":"05"'),
+      },
+    ]);
+
+    const logResult = await client.callTool({
+      name: 'workflow_validation_log',
+      arguments: {
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '05',
+        validationId: 'validation-1',
+      },
+    });
+    expect(logResult.isError).not.toBe(true);
+    expect(logResult.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('raw output'),
       },
     ]);
 

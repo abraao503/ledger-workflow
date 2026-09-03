@@ -23,14 +23,18 @@ export type TransitionContext = {
   redEvidence?: boolean;
   redEvidenceSha?: string;
   redEvidenceFingerprint?: string;
+  redEvidenceContentFingerprint?: string;
   redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
   redEvidenceReason?: string;
   currentSha?: string;
   currentFingerprint?: string;
+  currentContentFingerprint?: string;
   tddExceptionReason?: string;
   greenEvidence?: boolean;
   greenEvidenceSha?: string;
   greenEvidenceFingerprint?: string;
+  greenEvidenceContentFingerprint?: string;
+  greenEvidencePendingRepositories?: string[];
   reviewApproved?: boolean;
   hasBlockingFindings?: boolean;
   changesRequired?: boolean;
@@ -42,14 +46,19 @@ export class WorkflowTransitionError extends Error {
   constructor(
     public readonly code: string,
     message = code,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'WorkflowTransitionError';
   }
 }
 
-const transitionError = (code: string): never => {
-  throw new WorkflowTransitionError(code);
+const transitionError = (
+  code: string,
+  message = code,
+  details?: Record<string, unknown>,
+): never => {
+  throw new WorkflowTransitionError(code, message, details);
 };
 
 export class WorkflowStateMachine {
@@ -108,6 +117,8 @@ export class WorkflowStateMachine {
       }
 
       if (!evidenceMatchesCurrent(
+        context.redEvidenceContentFingerprint,
+        context.currentContentFingerprint,
         context.redEvidenceFingerprint,
         context.currentFingerprint,
         context.redEvidenceSha,
@@ -142,23 +153,12 @@ export class WorkflowStateMachine {
     }
 
     if (from === 'IMPLEMENTING' && to === 'GREEN_CONFIRMED') {
-      if (!context.greenEvidence) {
-        transitionError('GREEN_EVIDENCE_REQUIRED');
-      }
-
-      if (!evidenceMatchesCurrent(
-        context.greenEvidenceFingerprint,
-        context.currentFingerprint,
-        context.greenEvidenceSha,
-        context.currentSha,
-      )) {
-        transitionError('GREEN_EVIDENCE_STALE');
-      }
-
+      assertGreenEvidenceCurrent(context);
       return;
     }
 
     if (from === 'GREEN_CONFIRMED' && to === 'READY_FOR_REVIEW') {
+      assertGreenEvidenceCurrent(context);
       return;
     }
 
@@ -171,6 +171,7 @@ export class WorkflowStateMachine {
         transitionError('BLOCKING_FINDINGS');
       }
 
+      assertGreenEvidenceCurrent(context);
       return;
     }
 
@@ -195,6 +196,11 @@ export class WorkflowStateMachine {
         transitionError('COMMIT_REQUIRED');
       }
 
+      if (!context.greenEvidenceContentFingerprint || !context.currentContentFingerprint) {
+        transitionError('GREEN_CONTENT_EVIDENCE_REQUIRED');
+      }
+
+      assertGreenEvidenceCurrent(context);
       return;
     }
 
@@ -203,18 +209,51 @@ export class WorkflowStateMachine {
 }
 
 function evidenceMatchesCurrent(
+  evidenceContentFingerprint: string | undefined,
+  currentContentFingerprint: string | undefined,
   evidenceFingerprint: string | undefined,
   currentFingerprint: string | undefined,
   evidenceSha: string | undefined,
   currentSha: string | undefined,
 ): boolean {
-  if (evidenceFingerprint || currentFingerprint) {
+  if (evidenceContentFingerprint) {
     return Boolean(
-      evidenceFingerprint &&
+      currentContentFingerprint &&
+      evidenceContentFingerprint === currentContentFingerprint,
+    );
+  }
+
+  if (evidenceFingerprint) {
+    return Boolean(
       currentFingerprint &&
       evidenceFingerprint === currentFingerprint,
     );
   }
 
   return Boolean(evidenceSha && currentSha && evidenceSha === currentSha);
+}
+
+function assertGreenEvidenceCurrent(context: TransitionContext): void {
+  if (!context.greenEvidence) {
+    if (context.greenEvidencePendingRepositories?.length) {
+      transitionError(
+        'GREEN_EVIDENCE_INCOMPLETE',
+        'GREEN ainda não foi confirmado em todos os repositórios autorizados',
+        { pendingRepositoryKeys: context.greenEvidencePendingRepositories },
+      );
+    }
+
+    transitionError('GREEN_EVIDENCE_REQUIRED');
+  }
+
+  if (!evidenceMatchesCurrent(
+    context.greenEvidenceContentFingerprint,
+    context.currentContentFingerprint,
+    context.greenEvidenceFingerprint,
+    context.currentFingerprint,
+    context.greenEvidenceSha,
+    context.currentSha,
+  )) {
+    transitionError('GREEN_EVIDENCE_STALE');
+  }
 }

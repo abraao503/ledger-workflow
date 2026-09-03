@@ -43,6 +43,7 @@ describe('GitReadAdapter', () => {
       sha: 'abc123',
       dirty: true,
       changedFiles: ['src/changed.ts', 'test/new.spec.ts', 'src/new.ts'],
+      contentFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(snapshot.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(calls).toEqual([
@@ -50,6 +51,10 @@ describe('GitReadAdapter', () => {
       { args: ['git', 'rev-parse', 'HEAD'], cwd: '/workspace/api' },
       {
         args: ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'ls-files', '--stage', '-z'],
         cwd: '/workspace/api',
       },
       {
@@ -64,7 +69,67 @@ describe('GitReadAdapter', () => {
         args: ['git', 'hash-object', '--no-filters', '--', 'test/new.spec.ts'],
         cwd: '/workspace/api',
       },
+      {
+        args: ['git', 'hash-object', '--no-filters', '--', 'src/changed.ts'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'hash-object', '--no-filters', '--', 'test/new.spec.ts'],
+        cwd: '/workspace/api',
+      },
+      {
+        args: ['git', 'hash-object', '--no-filters', '--', 'src/new.ts'],
+        cwd: '/workspace/api',
+      },
     ]);
+  });
+
+  it('keeps the content fingerprint when the validated worktree is committed', async () => {
+    let committed = false;
+    const command: GitCommandPort = {
+      run: async (args) => {
+        const commandLine = args.join(' ');
+
+        if (commandLine.includes('--abbrev-ref')) {
+          return 'dev\n';
+        }
+
+        if (commandLine === 'git rev-parse HEAD') {
+          return committed ? 'def456\n' : 'abc123\n';
+        }
+
+        if (commandLine.includes('status --porcelain')) {
+          return committed ? '' : ' M src/changed.ts\n';
+        }
+
+        if (commandLine.includes('ls-files --stage')) {
+          return committed
+            ? '100644 worktree-hash 0\tsrc/changed.ts\0'
+            : '100644 base-hash 0\tsrc/changed.ts\0';
+        }
+
+        if (commandLine.includes('diff --no-ext-diff')) {
+          return committed ? '' : 'diff --git a/src/changed.ts b/src/changed.ts\n+changed\n';
+        }
+
+        if (commandLine.includes('ls-files --others')) {
+          return '';
+        }
+
+        if (commandLine.includes('hash-object')) {
+          return 'worktree-hash\n';
+        }
+
+        return '';
+      },
+    };
+    const adapter = new GitReadAdapter(command);
+    const beforeCommit = await adapter.capture('/workspace/api');
+    committed = true;
+    const afterCommit = await adapter.capture('/workspace/api');
+
+    expect(beforeCommit.contentFingerprint).toBe(afterCommit.contentFingerprint);
+    expect(beforeCommit.fingerprint).not.toBe(afterCommit.fingerprint);
   });
 
   it('converts a git failure into an application error', async () => {

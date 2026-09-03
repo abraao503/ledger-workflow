@@ -5,6 +5,9 @@ import { z } from 'zod';
 
 import { isWorkflowApplicationError } from '../../application/workflow-ledger.js';
 import { isDashboardView, type DashboardView } from '../../application/dashboard.js';
+import type { ExecuteValidationInput } from '../../application/types.js';
+import { WorkflowTransitionError } from '../../domain/workflow-state.js';
+import { formatValidationResult } from '../validation-output.js';
 import type { WorkflowApp } from '../../application/workflow-app.js';
 
 const optionalKey = z.string().trim().min(1).optional();
@@ -19,7 +22,7 @@ const actionSchema = z.object({
     'MARK_READY', 'AUTHORIZE', 'MARK_TESTS_DEFINED', 'RUN_RED',
     'APPROVE_TDD_EXCEPTION', 'START_IMPLEMENTING', 'RUN_GREEN',
     'MARK_READY_FOR_REVIEW', 'SUBMIT_REVIEW', 'RETURN_TO_TESTS',
-    'CLOSE', 'BLOCK', 'REOPEN', 'RUN_CHECK', 'REINSPECT', 'COMPACT_HISTORY',
+    'CLOSE', 'BLOCK', 'REOPEN', 'INVALIDATE_GREEN', 'RUN_CHECK', 'REINSPECT', 'COMPACT_HISTORY',
   ]),
   projectKey: z.string().trim().min(1),
   featureKey: z.string().trim().min(1),
@@ -149,13 +152,17 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
     case 'RUN_RED':
     case 'RUN_GREEN':
     case 'RUN_CHECK':
-      return app.validation.run({
-        ...selection,
-        repositoryKey: requireField(input.repositoryKey, 'repositoryKey'),
-        profileKey: requireField(input.profileKey, 'profileKey'),
-        purpose: input.action === 'RUN_RED' ? 'RED' : input.action === 'RUN_GREEN' ? 'GREEN' : 'CHECK',
-        reason: input.reason,
-      });
+      {
+        const validationInput: ExecuteValidationInput = {
+          ...selection,
+          repositoryKey: requireField(input.repositoryKey, 'repositoryKey'),
+          profileKey: requireField(input.profileKey, 'profileKey'),
+          purpose: input.action === 'RUN_RED' ? 'RED' : input.action === 'RUN_GREEN' ? 'GREEN' : 'CHECK',
+          reason: input.reason,
+        };
+        const result = await app.validation.run(validationInput);
+        return formatValidationResult(app, validationInput, result);
+      }
     case 'APPROVE_TDD_EXCEPTION': return transition('TDD_EXCEPTION_APPROVED');
     case 'START_IMPLEMENTING': return transition('IMPLEMENTING');
     case 'MARK_READY_FOR_REVIEW': return transition('READY_FOR_REVIEW');
@@ -175,6 +182,11 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
       return app.ledger.reopenWorkItem({
         ...selection,
         actor: requireField(input.actor, 'actor'),
+        reason: requireField(input.reason, 'reason'),
+      });
+    case 'INVALIDATE_GREEN':
+      return app.ledger.invalidateGreen({
+        ...selection,
         reason: requireField(input.reason, 'reason'),
       });
     case 'REINSPECT': {
@@ -251,6 +263,15 @@ export function webErrorHandler(error: unknown, _request: Request, response: Res
         ? 404
         : 422;
     response.status(status).json({ code: error.code, message: error.message });
+    return;
+  }
+
+  if (error instanceof WorkflowTransitionError) {
+    response.status(422).json({
+      code: error.code,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    });
     return;
   }
 

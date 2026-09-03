@@ -1,25 +1,27 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { WorkflowLedger } from './workflow-ledger.js';
-import type { GitReadPort } from './types.js';
+import type { GitReadPort, SubmitReviewInput } from './types.js';
 import { createTestDatabase, type TestDatabase } from '../infrastructure/db/test-database.js';
 
 describe('WorkflowLedger', () => {
   let database: TestDatabase;
   let client: PrismaClient;
   let ledger: WorkflowLedger;
+  let snapshot = {
+    branch: 'dev',
+    sha: 'sha-1',
+    dirty: false,
+    changedFiles: [] as string[],
+    fingerprint: 'fingerprint-1',
+    contentFingerprint: 'content-1',
+  };
 
   beforeAll(() => {
     database = createTestDatabase();
     client = database.client;
     const fakeGit: GitReadPort = {
-      capture: async () => ({
-        branch: 'dev',
-        sha: 'sha-1',
-        dirty: false,
-        changedFiles: [],
-        fingerprint: 'fingerprint-1',
-      }),
+      capture: async () => snapshot,
     };
     ledger = new WorkflowLedger(client, fakeGit);
   });
@@ -166,7 +168,7 @@ describe('WorkflowLedger', () => {
       exitCode: 0,
       sha: 'sha-1',
       durationMs: 200,
-      summary: { suites: 1, tests: 2 },
+      summary: { suites: 1, tests: 2, contentFingerprint: 'content-1' },
     });
     await ledger.transitionWorkItem({
       projectKey: 'carara',
@@ -180,7 +182,7 @@ describe('WorkflowLedger', () => {
       itemKey: '05',
       to: 'READY_FOR_REVIEW',
     });
-    const reviewed = await ledger.submitReview({
+    const reviewInput: SubmitReviewInput = {
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
@@ -189,8 +191,40 @@ describe('WorkflowLedger', () => {
       verdict: 'APPROVED',
       summary: 'Critérios atendidos',
       findings: [],
+    };
+    snapshot = {
+      ...snapshot,
+      fingerprint: 'fingerprint-2',
+      contentFingerprint: 'content-2',
+    };
+    await expect(ledger.submitReview(reviewInput)).rejects.toMatchObject({
+      code: 'GREEN_EVIDENCE_STALE',
     });
+    snapshot = {
+      ...snapshot,
+      fingerprint: 'fingerprint-1',
+      contentFingerprint: 'content-1',
+    };
+    const reviewed = await ledger.submitReview(reviewInput);
     expect(reviewed.item.state).toBe('APPROVED');
+    snapshot = {
+      ...snapshot,
+      fingerprint: 'fingerprint-2',
+      contentFingerprint: 'content-2',
+    };
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'carara',
+      featureKey: 'E6',
+      itemKey: '05',
+      to: 'CLOSED',
+      commitSha: 'sha-2',
+    })).rejects.toMatchObject({ code: 'GREEN_EVIDENCE_STALE' });
+    snapshot = {
+      ...snapshot,
+      sha: 'sha-2',
+      fingerprint: 'fingerprint-3',
+      contentFingerprint: 'content-1',
+    };
     const closed = await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',

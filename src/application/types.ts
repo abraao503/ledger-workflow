@@ -96,6 +96,7 @@ export type GitSnapshot = {
   dirty: boolean;
   changedFiles: string[];
   fingerprint: string;
+  contentFingerprint?: string;
 };
 
 export type GitReadPort = {
@@ -138,6 +139,21 @@ export type ExecuteValidationInput = {
   profileKey: string;
   purpose: 'RED' | 'GREEN' | 'CHECK';
   reason?: string;
+};
+
+export type ConfirmStructuralRedInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  validationId: string;
+  reason: string;
+};
+
+export type InvalidateGreenInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  reason: string;
 };
 
 export type CommandRequest = {
@@ -261,6 +277,7 @@ export type DashboardActionId =
   | 'CLOSE'
   | 'BLOCK'
   | 'REOPEN'
+  | 'INVALIDATE_GREEN'
   | 'RUN_CHECK'
   | 'REINSPECT'
   | 'COMPACT_HISTORY';

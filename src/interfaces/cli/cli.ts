@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { WorkflowApplicationError } from '../../application/errors.js';
 import type { WorkflowApp } from '../../application/workflow-app.js';
 import { parseWorkflowImport } from '../../application/workflow-importer.js';
+import { formatValidationResult } from '../validation-output.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -181,6 +182,22 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       }), stdout);
     });
 
+  item
+    .command('invalidate-green')
+    .description('Invalida GREEN obsoleto e retorna a fatia para IMPLEMENTING')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.invalidateGreen({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        reason: options.reason,
+      }), stdout);
+    });
+
   const validationProfile = program
     .command('validation-profile')
     .description('Registra comandos de validação allowlistados');
@@ -229,17 +246,56 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         purpose: options.purpose,
         reason: options.reason,
       });
-      emit(command, {
-        id: result.validation.id,
-        status: result.validation.status,
-        resultKind: result.validation.resultKind,
-        sha: result.validation.sha,
-        durationMs: result.validation.durationMs,
-        classification: result.classification,
-        reused: result.reused,
-        itemState: result.itemState,
-        actionRequired: result.actionRequired,
-      }, stdout);
+      emit(command, await formatValidationResult(app, {
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        repositoryKey: options.repository,
+        profileKey: options.profile,
+        purpose: options.purpose,
+        reason: options.reason,
+      }, result), stdout);
+    });
+
+  validate
+    .command('confirm-red')
+    .description('Confirma um RED estrutural já registrado sem executar os testes novamente')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--validation <id>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.confirmStructuralRed({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        validationId: options.validation,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  validate
+    .command('log')
+    .description('Lê o log retido de uma validação sem executar o perfil')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--validation <id>')
+    .option('--raw', 'emite somente o texto bruto do log')
+    .action(async (options, command) => {
+      const result = await app.ledger.getValidationLog({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        validationId: options.validation,
+      });
+      if (options.raw) {
+        stdout.write(result.text.endsWith('\n') ? result.text : `${result.text}\n`);
+        return;
+      }
+
+      emit(command, result, stdout);
     });
 
   const review = program.command('review').description('Registra revisão');

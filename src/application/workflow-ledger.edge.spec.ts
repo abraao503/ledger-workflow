@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import type { DefineWorkItemInput, GitReadPort } from './types.js';
+import { ValidationExecutor } from './validation-executor.js';
 import { WorkflowLedger } from './workflow-ledger.js';
 import { createTestDatabase, type TestDatabase } from '../infrastructure/db/test-database.js';
 
@@ -14,13 +15,14 @@ describe('WorkflowLedger edge cases', () => {
     dirty: boolean;
     changedFiles: string[];
     fingerprint: string;
+    contentFingerprint?: string;
   };
 
   beforeAll(async () => {
     database = createTestDatabase();
     client = database.client;
     snapshot = {
-      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1', contentFingerprint: 'content-1',
     };
     const git: GitReadPort = { capture: async () => snapshot };
     ledger = new WorkflowLedger(client, git);
@@ -63,6 +65,8 @@ describe('WorkflowLedger edge cases', () => {
       'review',
       'review-changes',
       'review-blocked',
+      'green-stale',
+      'multi-green',
     ]) {
       await defineReadyItem(itemKey);
     }
@@ -85,23 +89,23 @@ describe('WorkflowLedger edge cases', () => {
 
   it('refuses authorization with a dirty baseline', async () => {
     snapshot = {
-      branch: 'dev', sha: 'sha-1', dirty: true, changedFiles: ['src/changed.ts'], fingerprint: 'fingerprint-dirty',
+      branch: 'dev', sha: 'sha-1', dirty: true, changedFiles: ['src/changed.ts'], fingerprint: 'fingerprint-dirty', contentFingerprint: 'content-dirty',
     };
 
     await expect(authorize('dirty')).rejects.toMatchObject({ code: 'DIRTY_BASELINE' });
     expect(await client.authorization.count()).toBe(0);
     snapshot = {
-      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1', contentFingerprint: 'content-1',
     };
   });
 
   it('refuses an unexpected branch, duplicate repository keys and an empty baseline', async () => {
     snapshot = {
-      branch: 'feature', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-branch',
+      branch: 'feature', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-branch', contentFingerprint: 'content-branch',
     };
     await expect(authorize('branch')).rejects.toMatchObject({ code: 'EXPECTED_BRANCH_MISMATCH' });
     snapshot = {
-      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1',
+      branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1', contentFingerprint: 'content-1',
     };
 
     await expect(authorize('duplicate', ['api', 'api']))
@@ -177,6 +181,204 @@ describe('WorkflowLedger edge cases', () => {
       orderBy: { createdAt: 'desc' },
     });
     expect(event.payloadJson).toContain('operator');
+  });
+
+  it('rejects stale GREEN before review and provides an explicit invalidation path', async () => {
+    const cleanSnapshot = snapshot;
+
+    try {
+      await authorize('green-stale');
+      await ledger.transitionWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        to: 'TESTS_DEFINED',
+      });
+      await ledger.createValidationProfile({
+        projectKey: 'edge',
+        repositoryKey: 'api',
+        key: 'green-stale',
+        program: 'npm',
+        args: ['test'],
+        parser: 'GENERIC',
+      });
+      await ledger.recordValidation({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        repositoryKey: 'api',
+        profileKey: 'green-stale',
+        purpose: 'RED',
+        status: 'COMPLETED',
+        resultKind: 'TEST_FAILURE',
+        exitCode: 1,
+        sha: 'sha-1',
+        durationMs: 10,
+        summary: { fingerprint: 'fingerprint-1', redEvidenceKind: 'BEHAVIORAL' },
+      });
+      await ledger.transitionWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        to: 'RED_CONFIRMED',
+      });
+      await ledger.transitionWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        to: 'IMPLEMENTING',
+      });
+      await ledger.recordValidation({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        repositoryKey: 'api',
+        profileKey: 'green-stale',
+        purpose: 'GREEN',
+        status: 'COMPLETED',
+        resultKind: 'PASS',
+        exitCode: 0,
+        sha: 'sha-1',
+        durationMs: 10,
+        summary: { fingerprint: 'fingerprint-1' },
+      });
+      await ledger.transitionWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        to: 'GREEN_CONFIRMED',
+      });
+
+      snapshot = {
+        branch: 'dev',
+        sha: 'sha-2',
+        dirty: true,
+        changedFiles: ['src/changed.ts'],
+        fingerprint: 'fingerprint-2',
+        contentFingerprint: 'content-2',
+      };
+      await expect(ledger.transitionWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        to: 'READY_FOR_REVIEW',
+      })).rejects.toMatchObject({ code: 'GREEN_EVIDENCE_STALE' });
+
+      const invalidated = await ledger.invalidateGreen({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey: 'green-stale',
+        reason: 'a worktree mudou depois da validação',
+      });
+      expect(invalidated.state).toBe('IMPLEMENTING');
+      await expect(client.workflowEvent.findFirst({
+        where: { workItemId: invalidated.id, type: 'GREEN_INVALIDATED' },
+        orderBy: { createdAt: 'desc' },
+      })).resolves.toMatchObject({
+        payloadJson: expect.stringContaining('a worktree mudou depois da validação'),
+      });
+    } finally {
+      snapshot = cleanSnapshot;
+    }
+  });
+
+  it('waits for GREEN evidence from every authorized repository', async () => {
+    await authorize('multi-green', ['api', 'planning']);
+    await ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      to: 'TESTS_DEFINED',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: 'multi-api',
+      program: 'npm',
+      args: ['test'],
+      parser: 'GENERIC',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'planning',
+      key: 'multi-planning',
+      program: 'npm',
+      args: ['test'],
+      parser: 'GENERIC',
+    });
+    await ledger.recordValidation({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      repositoryKey: 'api',
+      profileKey: 'multi-api',
+      purpose: 'RED',
+      status: 'COMPLETED',
+      resultKind: 'TEST_FAILURE',
+      exitCode: 1,
+      sha: 'sha-1',
+      durationMs: 10,
+      summary: { fingerprint: 'fingerprint-1', contentFingerprint: 'content-1', redEvidenceKind: 'BEHAVIORAL' },
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      to: 'RED_CONFIRMED',
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      to: 'IMPLEMENTING',
+    });
+    const executor = new ValidationExecutor(
+      client,
+      ledger,
+      { capture: async () => snapshot },
+      {
+        run: async () => ({
+          exitCode: 0,
+          stdout: 'passed',
+          stderr: '',
+          timedOut: false,
+        }),
+      },
+    );
+    await expect(executor.run({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      repositoryKey: 'api',
+      profileKey: 'multi-api',
+      purpose: 'GREEN',
+    })).resolves.toMatchObject({
+      itemState: 'IMPLEMENTING',
+      actionRequired: 'GREEN_REPOSITORIES_PENDING',
+      pendingRepositoryKeys: ['planning'],
+    });
+
+    await ledger.recordValidation({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      repositoryKey: 'planning',
+      profileKey: 'multi-planning',
+      purpose: 'GREEN',
+      status: 'COMPLETED',
+      resultKind: 'PASS',
+      exitCode: 0,
+      sha: 'sha-1',
+      durationMs: 10,
+      summary: { fingerprint: 'fingerprint-1', contentFingerprint: 'content-1' },
+    });
+
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'multi-green',
+      to: 'GREEN_CONFIRMED',
+    })).resolves.toMatchObject({ state: 'GREEN_CONFIRMED' });
   });
 
   it('rejects unsafe or out-of-range validation profiles', async () => {
@@ -286,6 +488,8 @@ describe('WorkflowLedger edge cases', () => {
     expect(result.keepDetailed).toEqual([
       'review-changes',
       'review-blocked',
+      'green-stale',
+      'multi-green',
       'duplicate',
       'empty',
       'review',

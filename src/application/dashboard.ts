@@ -308,7 +308,7 @@ function makeActions(input: {
   });
   add({
     id: 'RUN_RED', label: 'Executar validação RED', kind: 'primary',
-    enabled: ['TESTS_DEFINED', 'CHANGES_REQUIRED'].includes(input.state),
+    enabled: input.state === 'TESTS_DEFINED',
     options: validationOptions,
   });
   add({
@@ -327,6 +327,11 @@ function makeActions(input: {
   add({
     id: 'MARK_READY_FOR_REVIEW', label: 'Enviar para revisão', kind: 'primary',
     enabled: input.state === 'GREEN_CONFIRMED',
+  });
+  add({
+    id: 'INVALIDATE_GREEN', label: 'Invalidar GREEN obsoleto', kind: 'danger',
+    enabled: ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(input.state),
+    reason: 'Use quando a worktree mudou depois do GREEN',
   });
   add({
     id: 'SUBMIT_REVIEW', label: 'Registrar revisão', kind: 'primary',

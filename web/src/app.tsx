@@ -413,7 +413,7 @@ function ActionFields({ action, dashboard, fields, set }: { action: DashboardAct
   if (action.id === 'REINSPECT') return <div className="field-grid">{input('repositoryKey', 'Repositório', action.options?.repositoryKeys?.[0] ?? 'repo')}</div>;
   if (action.id === 'COMPACT_HISTORY') return <div className="field-grid">{input('keepRecent', 'Fatias recentes preservadas', '2')}</div>;
   if (action.id === 'REOPEN') return <div className="field-grid">{input('actor', 'Ator', 'operator')}{input('reason', 'Motivo da reabertura', 'Retomar após correção do bloqueio')}</div>;
-  if (action.id === 'APPROVE_TDD_EXCEPTION' || action.id === 'BLOCK') return <div className="field-grid">{input('reason', action.id === 'BLOCK' ? 'Motivo do bloqueio' : 'Justificativa TDD', 'Descreva a decisão e o risco')}{action.id === 'BLOCK' && input('actor', 'Ator', 'operator', false)}</div>;
+  if (action.id === 'APPROVE_TDD_EXCEPTION' || action.id === 'BLOCK' || action.id === 'INVALIDATE_GREEN') return <div className="field-grid">{input('reason', action.id === 'BLOCK' ? 'Motivo do bloqueio' : action.id === 'INVALIDATE_GREEN' ? 'Motivo da invalidação' : 'Justificativa TDD', action.id === 'INVALIDATE_GREEN' ? 'A worktree mudou depois do GREEN' : 'Descreva a decisão e o risco')}{action.id === 'BLOCK' && input('actor', 'Ator', 'operator', false)}</div>;
   return <p className="confirm-copy">Confirmar transição de <b>{dashboard?.item.state}</b> para a próxima etapa?</p>;
 }
 

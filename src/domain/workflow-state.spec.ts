@@ -14,9 +14,12 @@ const baseContext = (): TransitionContext => ({
   currentSha: 'sha-1',
   redEvidenceFingerprint: 'fingerprint-1',
   currentFingerprint: 'fingerprint-1',
+  redEvidenceContentFingerprint: 'content-1',
+  currentContentFingerprint: 'content-1',
   greenEvidence: true,
   greenEvidenceSha: 'sha-1',
   greenEvidenceFingerprint: 'fingerprint-1',
+  greenEvidenceContentFingerprint: 'content-1',
   reviewApproved: true,
   hasBlockingFindings: false,
   commitSha: 'sha-1',
@@ -92,6 +95,8 @@ describe('WorkflowStateMachine', () => {
       ...baseContext(),
       currentFingerprint: undefined,
       greenEvidenceFingerprint: undefined,
+      currentContentFingerprint: undefined,
+      greenEvidenceContentFingerprint: undefined,
     };
     expect(() =>
       machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
@@ -105,7 +110,49 @@ describe('WorkflowStateMachine', () => {
     expect(() =>
       machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
         ...baseContext(),
-        currentFingerprint: 'fingerprint-2',
+        currentContentFingerprint: 'content-2',
+      }),
+    ).toThrow('GREEN_EVIDENCE_STALE');
+
+    expect(() =>
+      machine.assertTransition('GREEN_CONFIRMED', 'READY_FOR_REVIEW', {
+        ...baseContext(),
+        currentContentFingerprint: 'content-2',
+      }),
+    ).toThrow('GREEN_EVIDENCE_STALE');
+  });
+
+  it('reports repositories that are still missing GREEN evidence', () => {
+    let error: unknown;
+    try {
+      machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
+        ...baseContext(),
+        greenEvidence: false,
+        greenEvidencePendingRepositories: ['front'],
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toMatchObject({
+      code: 'GREEN_EVIDENCE_INCOMPLETE',
+      details: { pendingRepositoryKeys: ['front'] },
+    });
+  });
+
+  it('requires content evidence to close and rejects content changed after approval', () => {
+    expect(() =>
+      machine.assertTransition('APPROVED', 'CLOSED', {
+        ...baseContext(),
+        greenEvidenceContentFingerprint: undefined,
+        currentContentFingerprint: undefined,
+      }),
+    ).toThrow('GREEN_CONTENT_EVIDENCE_REQUIRED');
+
+    expect(() =>
+      machine.assertTransition('APPROVED', 'CLOSED', {
+        ...baseContext(),
+        currentContentFingerprint: 'content-2',
       }),
     ).toThrow('GREEN_EVIDENCE_STALE');
   });

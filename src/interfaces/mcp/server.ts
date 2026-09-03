@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { isWorkflowApplicationError } from '../../application/workflow-ledger.js';
 import type { WorkflowApp } from '../../application/workflow-app.js';
 import { workItemStates } from '../../domain/workflow-state.js';
+import { formatValidationResult } from '../validation-output.js';
 
 export function createMcpServer(app: WorkflowApp): McpServer {
   const server = new McpServer({
@@ -36,6 +37,20 @@ export function createMcpServer(app: WorkflowApp): McpServer {
       },
     },
     async (input) => runTool(() => app.ledger.getRecord(input)),
+  );
+
+  server.registerTool(
+    'workflow_validation_log',
+    {
+      description: 'Lê o log retido de uma validação sem executar o perfil novamente.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        validationId: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.getValidationLog(input)),
   );
 
   server.registerTool(
@@ -113,18 +128,23 @@ export function createMcpServer(app: WorkflowApp): McpServer {
     },
     async (input) => runTool(async () => {
       const result = await app.validation.run(input);
-      return {
-        id: result.validation.id,
-        status: result.validation.status,
-        resultKind: result.validation.resultKind,
-        sha: result.validation.sha,
-        durationMs: result.validation.durationMs,
-        classification: result.classification,
-        reused: result.reused,
-        itemState: result.itemState,
-        actionRequired: result.actionRequired,
-      };
+      return formatValidationResult(app, input, result);
     }),
+  );
+
+  server.registerTool(
+    'workflow_confirm_structural_red',
+    {
+      description: 'Confirma um RED estrutural já registrado, sem executar os testes novamente.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        validationId: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.confirmStructuralRed(input)),
   );
 
   server.registerTool(
@@ -156,6 +176,20 @@ export function createMcpServer(app: WorkflowApp): McpServer {
       },
     },
     async (input) => runTool(() => app.ledger.reopenWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_invalidate_green',
+    {
+      description: 'Invalida evidência GREEN obsoleta e retorna a fatia para IMPLEMENTING.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.invalidateGreen(input)),
   );
 
   server.registerTool(

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import path from 'node:path';
 
@@ -34,6 +35,8 @@ import type {
   CreateProjectInput,
   CreateTemplateInput,
   DefineWorkItemInput,
+  ConfirmStructuralRedInput,
+  InvalidateGreenInput,
   RecordRequest,
   RecordValidationInput,
   ReopenWorkItemInput,
@@ -46,6 +49,18 @@ const LOG_RETENTION_DAYS = 7;
 
 type WorkItemWithFeature = WorkItem & {
   feature: Feature;
+};
+
+type GreenEvidenceContext = {
+  greenEvidence: boolean;
+  greenEvidenceIsCurrent: boolean;
+  greenEvidencePendingRepositories: string[];
+  greenEvidenceSha?: string;
+  currentSha?: string;
+  greenEvidenceFingerprint?: string;
+  currentFingerprint?: string;
+  greenEvidenceContentFingerprint?: string;
+  currentContentFingerprint?: string;
 };
 
 export class WorkflowLedger {
@@ -458,6 +473,108 @@ export class WorkflowLedger {
     });
   }
 
+  async confirmStructuralRed(input: ConfirmStructuralRedInput) {
+    if (!input.reason.trim()) {
+      fail('STRUCTURAL_RED_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'TESTS_DEFINED') {
+      fail('STRUCTURAL_RED_CONFIRMATION_STATE_INVALID');
+    }
+
+    const validation = await this.db.validationRun.findFirst({
+      where: {
+        id: input.validationId,
+        workItemId: item.id,
+        purpose: 'RED',
+        resultKind: 'TEST_FAILURE',
+      },
+    });
+
+    if (!validation) {
+      fail('STRUCTURAL_RED_VALIDATION_NOT_FOUND');
+    }
+
+    const currentValidation = validation as NonNullable<typeof validation>;
+    const latestRed = await this.db.validationRun.findFirst({
+      where: {
+        workItemId: item.id,
+        purpose: 'RED',
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (!latestRed || latestRed.id !== currentValidation.id) {
+      fail('STRUCTURAL_RED_VALIDATION_NOT_LATEST');
+    }
+
+    const summary = decodeJson<{
+      redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
+    }>(currentValidation.summaryJson, {});
+    if (summary.redEvidenceKind !== 'STRUCTURAL') {
+      fail('STRUCTURAL_RED_VALIDATION_INVALID');
+    }
+
+    return this.transitionWorkItem({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+      itemKey: input.itemKey,
+      to: 'RED_CONFIRMED',
+      reason: input.reason.trim(),
+    });
+  }
+
+  async invalidateGreen(input: InvalidateGreenInput) {
+    if (!input.reason.trim()) {
+      fail('GREEN_INVALIDATION_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (!['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(item.state)) {
+      fail('GREEN_INVALIDATION_STATE_INVALID');
+    }
+
+    const greenContext = await this.getGreenEvidenceContext(item, true);
+    if (!greenContext.greenEvidence) {
+      fail('GREEN_EVIDENCE_NOT_FOUND');
+    }
+
+    if (greenContext.greenEvidenceIsCurrent) {
+      fail('GREEN_EVIDENCE_NOT_STALE');
+    }
+
+    return this.db.$transaction(async (transaction) => {
+      const updated = await transaction.workItem.update({
+        where: { id: item.id },
+        data: { state: 'IMPLEMENTING' },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'GREEN_INVALIDATED',
+          payloadJson: encodeJson({
+            from: item.state,
+            to: 'IMPLEMENTING',
+            reason: input.reason.trim(),
+            evidenceSha: greenContext.greenEvidenceSha,
+            evidenceFingerprint: greenContext.greenEvidenceFingerprint,
+            evidenceContentFingerprint: greenContext.greenEvidenceContentFingerprint,
+            currentSha: greenContext.currentSha,
+            currentFingerprint: greenContext.currentFingerprint,
+            currentContentFingerprint: greenContext.currentContentFingerprint,
+          }),
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async submitReview(input: SubmitReviewInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
 
@@ -471,7 +588,12 @@ export class WorkflowLedger {
       : input.verdict === 'CHANGES_REQUIRED'
         ? 'CHANGES_REQUIRED'
         : 'BLOCKED';
+    const transitionContext = await this.getTransitionContext(item, {
+      to: targetState,
+      reason: input.summary,
+    });
     this.stateMachine.assertTransition('READY_FOR_REVIEW', targetState, {
+      ...transitionContext,
       reviewApproved: input.verdict === 'APPROVED',
       changesRequired: input.verdict === 'CHANGES_REQUIRED',
       hasBlockingFindings: input.findings.some(
@@ -1030,25 +1152,17 @@ export class WorkflowLedger {
 
   private async getTransitionContext(
     item: WorkItemWithFeature,
-    input: TransitionWorkItemInput,
+    input: Pick<TransitionWorkItemInput, 'to' | 'reason' | 'commitSha'>,
   ): Promise<TransitionContext> {
-    const [authorization, tests, red, green, review] = await Promise.all([
+    const usesGreenEvidence = ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED', 'CLOSED']
+      .includes(input.to);
+    const [authorization, tests, red, review, greenContext] = await Promise.all([
       this.db.authorization.findFirst({ where: { workItemId: item.id } }),
       this.db.testSpecification.count({ where: { workItemId: item.id } }),
       this.db.validationRun.findFirst({
         where: {
           workItemId: item.id,
           purpose: 'RED',
-          resultKind: 'TEST_FAILURE',
-        },
-        include: { profile: { include: { repository: true } } },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.validationRun.findFirst({
-        where: {
-          workItemId: item.id,
-          purpose: 'GREEN',
-          resultKind: 'PASS',
         },
         include: { profile: { include: { repository: true } } },
         orderBy: { createdAt: 'desc' },
@@ -1058,42 +1172,69 @@ export class WorkflowLedger {
         include: { findings: true },
         orderBy: { createdAt: 'desc' },
       }),
+      usesGreenEvidence
+        ? this.getGreenEvidenceContext(item, true)
+        : Promise.resolve(emptyGreenEvidenceContext()),
     ]);
 
-    const evidence = input.to === 'RED_CONFIRMED'
-      ? red
-      : input.to === 'GREEN_CONFIRMED'
-        ? green
-        : undefined;
-    const evidenceSummary = evidence
+    const redEvidence = red?.resultKind === 'TEST_FAILURE' ? red : undefined;
+    const redEvidenceSummary = redEvidence
       ? decodeJson<{
           fingerprint?: string;
+          contentFingerprint?: string;
           redEvidenceKind?: 'BEHAVIORAL' | 'STRUCTURAL';
-        }>(evidence.summaryJson, {})
+        }>(redEvidence.summaryJson, {})
       : {};
-    const currentSnapshot = evidenceSummary.fingerprint && evidence
-      ? await this.git.capture(evidence.profile.repository.path)
+    const currentRedSnapshot = redEvidence && (
+      redEvidenceSummary.fingerprint || redEvidenceSummary.contentFingerprint
+    )
+      ? await this.git.capture(redEvidence.profile.repository.path)
       : undefined;
+    const currentSha = input.to === 'RED_CONFIRMED'
+      ? currentRedSnapshot?.sha ?? item.currentSha ?? redEvidence?.sha
+      : usesGreenEvidence
+        ? greenContext.currentSha ?? item.currentSha ?? greenContext.greenEvidenceSha
+        : item.currentSha ?? redEvidence?.sha ?? greenContext.greenEvidenceSha;
+    const currentFingerprint = input.to === 'RED_CONFIRMED'
+      ? currentRedSnapshot?.fingerprint
+      : usesGreenEvidence
+        ? greenContext.currentFingerprint
+        : undefined;
+    const currentContentFingerprint = input.to === 'RED_CONFIRMED'
+      ? currentRedSnapshot?.contentFingerprint
+      : usesGreenEvidence
+        ? greenContext.currentContentFingerprint
+        : undefined;
 
     return {
       requirementsComplete: item.requirementsComplete,
       authorized: Boolean(authorization),
       testsDefined: tests > 0 || item.tddPolicy !== 'REQUIRED',
-      redEvidence: Boolean(red),
-      redEvidenceSha: red?.sha,
+      redEvidence: Boolean(redEvidence),
+      redEvidenceSha: redEvidence?.sha,
+      redEvidenceContentFingerprint: input.to === 'RED_CONFIRMED'
+        ? redEvidenceSummary.contentFingerprint
+        : undefined,
       redEvidenceFingerprint: input.to === 'RED_CONFIRMED'
-        ? evidenceSummary.fingerprint
+        ? redEvidenceSummary.fingerprint
         : undefined,
       redEvidenceKind: input.to === 'RED_CONFIRMED'
-        ? evidenceSummary.redEvidenceKind
+        ? redEvidenceSummary.redEvidenceKind
         : undefined,
       redEvidenceReason: input.reason,
-      currentSha: currentSnapshot?.sha ?? item.currentSha ?? red?.sha ?? green?.sha,
-      currentFingerprint: currentSnapshot?.fingerprint,
-      greenEvidence: Boolean(green),
-      greenEvidenceSha: green?.sha,
-      greenEvidenceFingerprint: input.to === 'GREEN_CONFIRMED'
-        ? evidenceSummary.fingerprint
+      currentSha,
+      currentFingerprint,
+      currentContentFingerprint,
+      greenEvidence: greenContext.greenEvidence,
+      greenEvidenceSha: greenContext.greenEvidenceSha,
+      greenEvidenceFingerprint: usesGreenEvidence
+        ? greenContext.greenEvidenceFingerprint
+        : undefined,
+      greenEvidenceContentFingerprint: usesGreenEvidence
+        ? greenContext.greenEvidenceContentFingerprint
+        : undefined,
+      greenEvidencePendingRepositories: usesGreenEvidence
+        ? greenContext.greenEvidencePendingRepositories
         : undefined,
       tddExceptionReason: input.reason,
       reviewApproved: review?.verdict === 'APPROVED',
@@ -1103,6 +1244,101 @@ export class WorkflowLedger {
       changesRequired: review?.verdict === 'CHANGES_REQUIRED',
       commitSha: input.commitSha,
       blockReason: input.reason,
+    };
+  }
+
+  private async getGreenEvidenceContext(
+    item: WorkItemWithFeature,
+    captureCurrent: boolean,
+  ): Promise<GreenEvidenceContext> {
+    const [snapshots, validations] = await Promise.all([
+      this.db.repositorySnapshot.findMany({
+        where: { workItemId: item.id },
+        include: { repository: true },
+        orderBy: { capturedAt: 'desc' },
+      }),
+      this.db.validationRun.findMany({
+        where: { workItemId: item.id, purpose: 'GREEN' },
+        include: { profile: { include: { repository: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+    const repositories = new Map<string, { id: string; key: string; path: string }>();
+
+    for (const snapshot of snapshots) {
+      repositories.set(snapshot.repository.id, snapshot.repository);
+    }
+
+    if (snapshots.length === 0) {
+      for (const validation of validations) {
+        repositories.set(validation.profile.repository.id, validation.profile.repository);
+      }
+    }
+
+    const latestByRepository = new Map<string, (typeof validations)[number]>();
+    for (const validation of validations) {
+      if (!latestByRepository.has(validation.profile.repository.id)) {
+        latestByRepository.set(validation.profile.repository.id, validation);
+      }
+    }
+
+    const entries = await Promise.all(
+      [...repositories.values()].map(async (repository) => {
+        const validation = latestByRepository.get(repository.id);
+        const summary = validation
+          ? decodeJson<{ fingerprint?: string; contentFingerprint?: string }>(
+              validation.summaryJson,
+              {},
+            )
+          : {};
+        const currentSnapshot = captureCurrent && validation
+          ? await this.git.capture(repository.path)
+          : undefined;
+
+        return { repository, validation, summary, currentSnapshot };
+      }),
+    );
+    const greenEvidence = entries.length > 0 && entries.every((entry) => (
+      entry.validation?.resultKind === 'PASS'
+    ));
+    const hasAnyEvidence = entries.some((entry) => Boolean(entry.validation));
+    const greenEvidencePendingRepositories = hasAnyEvidence
+      ? entries
+          .filter((entry) => entry.validation?.resultKind !== 'PASS')
+          .map((entry) => entry.repository.key)
+          .sort()
+      : [];
+    const greenEvidenceIsCurrent = greenEvidence && entries.every((entry) => (
+      Boolean(entry.validation && entry.currentSnapshot) &&
+      matchesGreenSnapshot(
+        entry.summary,
+        entry.validation as NonNullable<typeof entry.validation>,
+        entry.currentSnapshot as NonNullable<typeof entry.currentSnapshot>,
+      )
+    ));
+
+    return {
+      greenEvidence,
+      greenEvidenceIsCurrent,
+      greenEvidencePendingRepositories,
+      greenEvidenceSha: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.validation?.sha })),
+      ),
+      currentSha: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.currentSnapshot?.sha })),
+      ),
+      greenEvidenceFingerprint: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.summary.fingerprint })),
+      ),
+      currentFingerprint: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.currentSnapshot?.fingerprint })),
+      ),
+      greenEvidenceContentFingerprint: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.summary.contentFingerprint })),
+      ),
+      currentContentFingerprint: aggregateEvidenceValues(
+        entries.map((entry) => ({ key: entry.repository.key, value: entry.currentSnapshot?.contentFingerprint })),
+      ),
     };
   }
 
@@ -1198,6 +1434,49 @@ export class WorkflowLedger {
 export const isWorkflowApplicationError = (
   error: unknown,
 ): error is WorkflowApplicationError => error instanceof WorkflowApplicationError;
+
+function emptyGreenEvidenceContext(): GreenEvidenceContext {
+  return {
+    greenEvidence: false,
+    greenEvidenceIsCurrent: false,
+    greenEvidencePendingRepositories: [],
+  };
+}
+
+function matchesGreenSnapshot(
+  summary: { fingerprint?: string; contentFingerprint?: string },
+  validation: { sha: string },
+  current: { sha: string; fingerprint: string; contentFingerprint?: string },
+): boolean {
+  if (summary.contentFingerprint) {
+    return Boolean(
+      current.contentFingerprint &&
+      summary.contentFingerprint === current.contentFingerprint,
+    );
+  }
+
+  if (summary.fingerprint) {
+    return summary.fingerprint === current.fingerprint;
+  }
+
+  return validation.sha === current.sha;
+}
+
+function aggregateEvidenceValues(
+  values: Array<{ key: string; value?: string }>,
+): string | undefined {
+  if (values.length === 0 || values.some((entry) => !entry.value)) {
+    return undefined;
+  }
+
+  const normalized = values
+    .map((entry) => ({ key: entry.key, value: entry.value as string }))
+    .sort((left, right) => left.key.localeCompare(right.key));
+
+  return createHash('sha256')
+    .update(JSON.stringify(normalized))
+    .digest('hex');
+}
 
 function historySummaryText(deliveredJson: string, state: string): string {
   const delivered = decodeJson<{ title?: string; summary?: string }>(deliveredJson, {});
