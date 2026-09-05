@@ -439,4 +439,16 @@ describe('WorkflowLedger', () => {
       { key: 'DEC-01', title: 'Fonte única de estado' },
     ]);
   });
+
+  it('resolves context to the latest closed item when the feature has no active slice', async () => {
+    const context = await ledger.getContext({
+      projectKey: 'carara',
+      featureKey: 'E6',
+    });
+    expect(context.current).toMatchObject({
+      featureKey: 'E6',
+      itemKey: '05',
+      state: 'CLOSED',
+    });
+  });
 });

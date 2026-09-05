@@ -432,4 +432,38 @@ describe('workflow CLI', () => {
     ]);
     expect(JSON.parse(output[4])).toEqual({ key: 'PEND-01', resolved: true });
   });
+
+  it('defaults review findings to an empty array when the flag is omitted', async () => {
+    let received: { findings?: unknown } | undefined;
+    const app = {
+      ledger: {
+        submitReview: async (input: { findings?: unknown }) => {
+          received = input;
+          return { id: 'review-1', verdict: 'APPROVED' };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'review',
+      'submit',
+      '--project',
+      'carara',
+      '--feature',
+      'E6',
+      '--item',
+      '01',
+      '--reviewer',
+      'reviewer',
+      '--verdict',
+      'APPROVED',
+      '--summary',
+      'Critérios atendidos',
+    ]);
+
+    expect(received?.findings).toEqual([]);
+  });
 });

@@ -361,7 +361,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--mode <mode>', 'SELF|INDEPENDENT', 'SELF')
     .requiredOption('--verdict <verdict>', 'APPROVED|CHANGES_REQUIRED|BLOCKED')
     .requiredOption('--summary <summary>')
-    .option('--findings <json>', '[]')
+    .option('--findings <json>', 'achados da revisão em JSON', '[]')
     .action(async (options, command) => {
       emit(command, await app.ledger.submitReview({
         projectKey: options.project,

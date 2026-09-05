@@ -1746,11 +1746,15 @@ export class WorkflowLedger {
       fail('FEATURE_NOT_FOUND');
     }
 
-    const item = await this.db.workItem.findFirst({
+    const item = (await this.db.workItem.findFirst({
       where: { featureId: (feature as Feature).id, state: { not: 'CLOSED' } },
       orderBy: { position: 'asc' },
       include: { feature: true },
-    });
+    })) ?? (await this.db.workItem.findFirst({
+      where: { featureId: (feature as Feature).id },
+      orderBy: { position: 'desc' },
+      include: { feature: true },
+    }));
 
     if (!item) {
       fail('ACTIVE_WORK_ITEM_NOT_FOUND');
