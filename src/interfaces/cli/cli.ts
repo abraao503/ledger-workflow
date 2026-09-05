@@ -452,6 +452,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   program
     .command('context')
+    .description('Mostra o contexto da feature e da fatia selecionada')
     .requiredOption('--project <key>')
     .option('--feature <key>')
     .option('--item <key>')

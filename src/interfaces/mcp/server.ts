@@ -13,9 +13,62 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   });
 
   server.registerTool(
+    'workflow_list_projects',
+    {
+      description: 'Lista os projetos registrados; use antes de escolher projectKey.',
+      inputSchema: {},
+    },
+    async () => runTool(() => app.ledger.listProjects()),
+  );
+
+  server.registerTool(
+    'workflow_list_features',
+    {
+      description: 'Lista as features do projeto e suas fatias (work items), com fase, posição e estado.',
+      inputSchema: {
+        projectKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listFeatures(input.projectKey)),
+  );
+
+  server.registerTool(
+    'workflow_list_repositories',
+    {
+      description: 'Lista os repositórios do projeto e os perfis de validação ativos.',
+      inputSchema: {
+        projectKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listRepositories(input.projectKey)),
+  );
+
+  server.registerTool(
+    'workflow_list_decisions',
+    {
+      description: 'Lista as decisões do projeto, incluindo escopo de feature e fatia.',
+      inputSchema: {
+        projectKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listDecisions(input.projectKey)),
+  );
+
+  server.registerTool(
+    'workflow_list_pending',
+    {
+      description: 'Lista as pendências do projeto, incluindo bloqueio, resolução e escopo.',
+      inputSchema: {
+        projectKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listPendingItems(input.projectKey)),
+  );
+
+  server.registerTool(
     'workflow_context',
     {
-      description: 'Retorna o contexto curto da feature e da fatia ativa.',
+      description: 'Retorna o contexto curto da feature e da fatia; informe featureKey e itemKey para uma seleção explícita.',
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string().optional(),

@@ -9,6 +9,11 @@ describe('workflow MCP server', () => {
   it('exposes the short context through the MCP protocol', async () => {
     const app = {
       ledger: {
+        listProjects: async () => ({ projects: [{ key: 'carara', name: 'Carará', status: 'ACTIVE' }] }),
+        listFeatures: async (projectKey: string) => ({ project: projectKey, features: [] }),
+        listRepositories: async (projectKey: string) => ({ project: projectKey, repositories: [] }),
+        listDecisions: async (projectKey: string) => ({ project: projectKey, decisions: [] }),
+        listPendingItems: async (projectKey: string) => ({ project: projectKey, pendingItems: [] }),
         getContext: async (input: { projectKey: string }) => {
           if (input.projectKey === 'missing') {
             throw new WorkflowApplicationError('PROJECT_NOT_FOUND');
@@ -54,6 +59,11 @@ describe('workflow MCP server', () => {
       'workflow_decision_record',
       'workflow_define_item',
       'workflow_invalidate_green',
+      'workflow_list_decisions',
+      'workflow_list_features',
+      'workflow_list_pending',
+      'workflow_list_projects',
+      'workflow_list_repositories',
       'workflow_list_validations',
       'workflow_pending_record',
       'workflow_pending_resolve',
@@ -74,6 +84,18 @@ describe('workflow MCP server', () => {
       {
         type: 'text',
         text: expect.stringContaining('"itemKey":"05"'),
+      },
+    ]);
+
+    const catalogResult = await client.callTool({
+      name: 'workflow_list_features',
+      arguments: { projectKey: 'carara' },
+    });
+    expect(catalogResult.isError).not.toBe(true);
+    expect(catalogResult.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('"project":"carara"'),
       },
     ]);
 

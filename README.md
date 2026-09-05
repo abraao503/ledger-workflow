@@ -1,10 +1,32 @@
 # Workflow ledger
 
 Aplicação local e independente para registrar o fluxo de implementação de
-features. O SQLite do ledger é a única fonte de verdade para estado, sequência,
-autorização, critérios, evidências, revisões, pendências e fechamento. O CLI e
-o MCP consultam e atualizam esse estado; nenhuma fonte documental externa
-participa do fluxo operacional.
+features e fatias. O SQLite do ledger é a única fonte de verdade para estado,
+sequência, autorização, critérios, evidências, revisões, pendências e
+fechamento. O CLI e o MCP consultam e atualizam esse estado; nenhuma fonte
+documental externa participa do fluxo operacional.
+
+## Vocabulário do ledger
+
+Uma `feature` é uma capacidade ou frente de produto que pode exigir várias
+entregas. Ela tem uma chave própria (`featureKey`), como `E6`, `E7`, `E8` ou
+`E9`, nome, resumo, plano e uma coleção de fatias. O catálogo não é fixo e
+uma feature não é sinônimo de todo o projeto: o mesmo projeto pode ter várias
+features ativas ao mesmo tempo.
+
+Uma `fatia` é um `WorkItem`: a menor unidade autorizável e verificável do
+trabalho. Ela é endereçada pela combinação `featureKey + itemKey`, por exemplo
+`E9 + 06`. A fatia contém título, fase, posição, casos de uso, critérios de
+aceite, testes, autorização, baselines, validações, revisão e commit. O
+`itemKey` só é único dentro da feature; portanto, `01` de `E6` e `01` de `E9`
+são fatias diferentes.
+
+Fases ou gates (`G0` a `G7`, por exemplo) são marcos do ciclo de uma fatia,
+não features nem fatias. A posição ordena as fatias dentro da feature e não
+deve ser inferida a partir do texto da chave: existem chaves numéricas (`01`)
+e chaves de gate (`G4`, `G7`). O estado da fatia (`DRAFT`, `IMPLEMENTING`,
+`CLOSED` etc.) é a referência para saber se há trabalho aberto; o status
+`ACTIVE` da feature, sozinho, não substitui a inspeção de suas fatias.
 
 ## Início rápido
 
@@ -23,7 +45,9 @@ O diretório `.workflow/` não deve ser versionado.
 ## Uso diário
 
 ```bash
-rtk node dist/interfaces/cli/main.js context --project carara --feature E6 --item 06
+rtk node dist/interfaces/cli/main.js project list
+rtk node dist/interfaces/cli/main.js feature list --project carara
+rtk node dist/interfaces/cli/main.js context --project carara --feature <feature-key> --item <item-key>
 rtk node dist/interfaces/cli/main.js item authorize --help
 rtk node dist/interfaces/cli/main.js validate run --help
 rtk node dist/interfaces/cli/main.js validate log --help
@@ -32,11 +56,29 @@ rtk node dist/interfaces/cli/main.js item transition --help
 rtk node dist/interfaces/cli/main.js item invalidate-green --help
 ```
 
-O primeiro comando é a consulta canônica para descobrir a fatia ativa, seu
-próximo estado, autorização, pendências, evidências, revisão e commit. Se a
-fatia não estiver informada, o contexto mostra o resumo da feature e suas
-fatias recentes. Para qualquer decisão de execução, use esse contexto antes
-de consultar os repositórios de código.
+O fluxo de descoberta é `project list` → `feature list` → escolha explícita de
+`featureKey` e `itemKey` → `context`/`item record`. No estado atual consultado
+do projeto `carara`, o catálogo inclui `E6`, `E7`, `E8` e `E9`; essa lista é
+apenas o estado do banco naquele momento, não uma enumeração fixa. Sempre leia
+`feature list` antes de assumir que existe uma chave ou que uma feature é a
+única em andamento.
+
+`context` é a consulta canônica para descobrir o estado, próximo estado,
+autorização, pendências, evidências, revisão e commit da fatia selecionada.
+Com `--feature` e sem `--item`, ele escolhe a primeira fatia não `CLOSED` por
+posição; se todas estiverem fechadas, escolhe a última por posição. Sem
+`--feature`, ele escolhe a feature `ACTIVE` atualizada mais recentemente —
+com várias features ativas isso é uma conveniência não determinística para a
+intenção do agente, portanto prefira informar ambas as chaves.
+
+Substitua os placeholders antes de executar os comandos abaixo:
+
+```bash
+rtk node dist/interfaces/cli/main.js context \
+  --project carara --feature <feature-key> --item <item-key>
+rtk node dist/interfaces/cli/main.js item record \
+  --project carara --feature <feature-key> --item <item-key>
+```
 
 ### Inspeção do ledger
 
@@ -46,9 +88,12 @@ Para descobrir chaves, ids e histórico sem recorrer ao banco direto:
 rtk node dist/interfaces/cli/main.js project list
 rtk node dist/interfaces/cli/main.js feature list --project carara
 rtk node dist/interfaces/cli/main.js repository list --project carara
-rtk node dist/interfaces/cli/main.js item record --project carara --feature E6 --item 06
-rtk node dist/interfaces/cli/main.js validate list --project carara --feature E6 --item 06
-rtk node dist/interfaces/cli/main.js validate list --project carara --feature E6 --item 06 --purpose GREEN
+rtk node dist/interfaces/cli/main.js item record \
+  --project carara --feature <feature-key> --item <item-key>
+rtk node dist/interfaces/cli/main.js validate list \
+  --project carara --feature <feature-key> --item <item-key>
+rtk node dist/interfaces/cli/main.js validate list \
+  --project carara --feature <feature-key> --item <item-key> --purpose GREEN
 ```
 
 `feature list` mostra features com suas fatias e estados; `repository list`
@@ -57,8 +102,12 @@ mostra repositórios e os perfis de validação ativos (chave, programa, args) �
 `item record` expõe o registro detalhado da fatia (critérios, testes,
 autorização, baselines, revisões, decisões e pendências) e `validate list`
 retorna as validações registradas com os ids aceitos por `validate log`.
-No MCP, o par do `item record` é `workflow_record` e o do `validate list` é
-`workflow_list_validations`.
+No MCP, use primeiro `workflow_list_projects` e
+`workflow_list_features`; o segundo já retorna as fatias de cada feature.
+Depois, `workflow_context` e `workflow_record` recebem as chaves escolhidas.
+`workflow_list_repositories` informa os perfis de validação. As consultas
+`workflow_list_decisions` e `workflow_list_pending` completam a inspeção
+project-wide antes de registrar uma nova decisão ou pendência.
 
 ### Decisões e pendências
 
@@ -67,12 +116,12 @@ explícitos no ledger. Use:
 
 ```bash
 rtk node dist/interfaces/cli/main.js decision add \
-  --project carara --feature E6 --item 06 \
+  --project carara --feature <feature-key> --item <item-key> \
   --key DEC-EXECUCAO-OFFLINE --title "Execução sem provider" \
   --content "O fluxo sintético roda sem provider externo" --pin
 rtk node dist/interfaces/cli/main.js decision list --project carara
 rtk node dist/interfaces/cli/main.js pending add \
-  --project carara --feature E6 --key PEND-PERFIL-BUILD \
+  --project carara --feature <feature-key> --key PEND-PERFIL-BUILD \
   --description "Definir perfil de build" --blocking
 rtk node dist/interfaces/cli/main.js pending list --project carara
 rtk node dist/interfaces/cli/main.js pending resolve \
@@ -120,7 +169,8 @@ pode ser lido sem nova execução com:
 
 ```bash
 rtk node dist/interfaces/cli/main.js validate log \
-  --project carara --feature E6 --item 06 --validation <id> --raw
+  --project carara --feature <feature-key> --item <item-key> \
+  --validation <id> --raw
 ```
 
 O mesmo recurso está disponível no MCP como `workflow_validation_log`.
@@ -160,12 +210,20 @@ O servidor STDIO é iniciado por `rtk npm run start:mcp` a partir deste
 diretório. A configuração de projeto em `../.codex/config.toml` registra o
 servidor `workflow` com aprovação para operações de escrita.
 
-As ferramentas principais são `workflow_context`, `workflow_record`,
-`workflow_list_validations`, `workflow_define_item`, `workflow_authorize`,
-`workflow_validate`, `workflow_validation_log`, `workflow_confirm_structural_red`,
-`workflow_transition`, `workflow_reopen`, `workflow_invalidate_green`,
-`workflow_review`, `workflow_decision_record`, `workflow_pending_record`,
+As ferramentas principais são `workflow_list_projects`,
+`workflow_list_features`, `workflow_list_repositories`,
+`workflow_list_decisions`, `workflow_list_pending`, `workflow_context`,
+`workflow_record`, `workflow_list_validations`, `workflow_define_item`,
+`workflow_authorize`, `workflow_validate`, `workflow_validation_log`,
+`workflow_confirm_structural_red`, `workflow_transition`,
+`workflow_reopen`, `workflow_invalidate_green`, `workflow_review`,
+`workflow_decision_record`, `workflow_pending_record`,
 `workflow_pending_resolve` e `workflow_compact_history`.
+
+As cinco ferramentas `workflow_list_*` iniciais são somente leitura e existem
+para que o agente descubra as chaves válidas e o estado global sem acessar o
+SQLite diretamente. O agente deve preferir essa sequência de catálogo antes
+de chamar uma ferramenta que exige `featureKey` ou `itemKey`.
 
 ## Dashboard web local
 
