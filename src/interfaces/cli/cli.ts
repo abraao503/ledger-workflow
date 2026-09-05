@@ -39,6 +39,13 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       }), stdout);
     });
 
+  project
+    .command('list')
+    .description('Lista projetos registrados no ledger')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listProjects(), stdout);
+    });
+
   const repository = program.command('repository').description('Gerencia repositórios registrados');
   repository
     .command('add')
@@ -53,6 +60,14 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         path: options.path,
         expectedBranch: options.branch,
       }), stdout);
+    });
+
+  repository
+    .command('list')
+    .description('Lista repositórios e perfis de validação ativos do projeto')
+    .requiredOption('--project <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listRepositories(options.project), stdout);
     });
 
   const template = program.command('template').description('Gerencia templates versionados');
@@ -89,6 +104,14 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         name: options.name,
         summary: options.summary,
       }), stdout);
+    });
+
+  feature
+    .command('list')
+    .description('Lista features do projeto com suas fatias e estados')
+    .requiredOption('--project <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listFeatures(options.project), stdout);
     });
 
   const item = program.command('item').description('Define, autoriza e avança fatias');
@@ -179,6 +202,20 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         itemKey: options.item,
         actor: options.actor,
         reason: options.reason,
+      }), stdout);
+    });
+
+  item
+    .command('record')
+    .description('Mostra o registro detalhado da fatia, incluindo ids de validações')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.getRecord({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
       }), stdout);
     });
 
@@ -276,6 +313,22 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   validate
+    .command('list')
+    .description('Lista validações registradas da fatia, com os ids para validate log')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .option('--purpose <purpose>', 'filtra por RED|GREEN|CHECK')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listValidations({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        purpose: options.purpose,
+      }), stdout);
+    });
+
+  validate
     .command('log')
     .description('Lê o log retido de uma validação sem executar o perfil')
     .requiredOption('--project <key>')
@@ -319,6 +372,81 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         verdict: options.verdict,
         summary: options.summary,
         findings: parseJson(options.findings, 'findings'),
+      }), stdout);
+    });
+
+  const decision = program.command('decision').description('Registra e consulta decisões');
+  decision
+    .command('add')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--title <title>')
+    .requiredOption('--content <text>')
+    .option('--feature <key>')
+    .option('--item <key>')
+    .option('--not-durable', 'registra como decisão não durável', false)
+    .option('--pin', 'protege a decisão da retenção de histórico', false)
+    .action(async (options, command) => {
+      emit(command, await app.ledger.recordDecision({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        key: options.key,
+        title: options.title,
+        content: options.content,
+        durable: !options.notDurable,
+        pinned: options.pin,
+      }), stdout);
+    });
+
+  decision
+    .command('list')
+    .description('Lista decisões do projeto')
+    .requiredOption('--project <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listDecisions(options.project), stdout);
+    });
+
+  const pending = program.command('pending').description('Registra e resolve pendências');
+  pending
+    .command('add')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--description <text>')
+    .option('--feature <key>')
+    .option('--item <key>')
+    .option('--blocking', 'marca a pendência como bloqueante', false)
+    .option('--pin', 'protege a pendência da retenção de histórico', false)
+    .action(async (options, command) => {
+      emit(command, await app.ledger.recordPendingItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        key: options.key,
+        description: options.description,
+        blocking: options.blocking,
+        pinned: options.pin,
+      }), stdout);
+    });
+
+  pending
+    .command('list')
+    .description('Lista pendências do projeto')
+    .requiredOption('--project <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listPendingItems(options.project), stdout);
+    });
+
+  pending
+    .command('resolve')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .option('--reason <reason>', 'justificativa da resolução')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.resolvePendingItem({
+        projectKey: options.project,
+        key: options.key,
+        reason: options.reason,
       }), stdout);
     });
 

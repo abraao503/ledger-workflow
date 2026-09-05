@@ -37,8 +37,12 @@ import type {
   DefineWorkItemInput,
   ConfirmStructuralRedInput,
   InvalidateGreenInput,
+  ListValidationsInput,
+  RecordDecisionInput,
+  RecordPendingItemInput,
   RecordRequest,
   RecordValidationInput,
+  ResolvePendingItemInput,
   ReopenWorkItemInput,
   SubmitReviewInput,
   TransitionWorkItemInput,
@@ -1061,6 +1065,331 @@ export class WorkflowLedger {
     } catch {
       return fail('VALIDATION_LOG_CORRUPT');
     }
+  }
+
+  async listProjects() {
+    const projects = await this.db.project.findMany({
+      orderBy: { key: 'asc' },
+      select: { key: true, name: true, status: true },
+    });
+
+    return { projects };
+  }
+
+  async listFeatures(projectKey: string) {
+    const project = await this.requireProject(projectKey);
+    const features = await this.db.feature.findMany({
+      where: { projectId: project.id },
+      orderBy: { key: 'asc' },
+      select: {
+        key: true,
+        name: true,
+        summary: true,
+        status: true,
+        currentPhaseKey: true,
+        items: {
+          orderBy: { position: 'asc' },
+          select: { key: true, title: true, phaseKey: true, state: true, position: true },
+        },
+      },
+    });
+
+    return { project: project.key, features };
+  }
+
+  async listRepositories(projectKey: string) {
+    const project = await this.requireProject(projectKey);
+    const repositories = await this.db.repository.findMany({
+      where: { projectId: project.id },
+      orderBy: { key: 'asc' },
+      include: {
+        validationProfiles: {
+          where: { active: true },
+          orderBy: { key: 'asc' },
+        },
+      },
+    });
+
+    return {
+      project: project.key,
+      repositories: repositories.map((repository) => ({
+        key: repository.key,
+        path: repository.path,
+        expectedBranch: repository.expectedBranch,
+        profiles: repository.validationProfiles.map((profile) => ({
+          key: profile.key,
+          program: profile.program,
+          args: decodeJson<string[]>(profile.argsJson, []),
+          parser: profile.parser,
+          cwd: profile.cwd,
+          timeoutSeconds: profile.timeoutSeconds,
+        })),
+      })),
+    };
+  }
+
+  async listValidations(input: ListValidationsInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const validations = await this.db.validationRun.findMany({
+      where: {
+        workItemId: item.id,
+        ...(input.purpose ? { purpose: input.purpose } : {}),
+      },
+      include: { profile: { include: { repository: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      item: { featureKey: item.feature.key, itemKey: item.key, state: item.state },
+      validations: validations.map((validation) => ({
+        id: validation.id,
+        purpose: validation.purpose,
+        repositoryKey: validation.profile.repository.key,
+        profileKey: validation.profile.key,
+        status: validation.status,
+        resultKind: validation.resultKind,
+        exitCode: validation.exitCode,
+        sha: validation.sha,
+        durationMs: validation.durationMs,
+        summary: decodeJson<Record<string, unknown>>(validation.summaryJson, {}),
+        createdAt: validation.createdAt,
+        logAvailable: Boolean(validation.logBlob) && (!validation.logExpiresAt || validation.logExpiresAt > new Date()),
+      })),
+    };
+  }
+
+  async recordDecision(input: RecordDecisionInput) {
+    if (!input.key.trim()) {
+      fail('DECISION_KEY_REQUIRED');
+    }
+
+    if (!input.title.trim() || !input.content.trim()) {
+      fail('DECISION_CONTENT_REQUIRED');
+    }
+
+    const project = await this.requireProject(input.projectKey);
+    const scope = await this.resolveEventScope(project.id, input.featureKey, input.itemKey);
+    const durable = input.durable ?? true;
+    const pinned = input.pinned ?? false;
+
+    return this.db.$transaction(async (transaction) => {
+      const decision = await transaction.decision.upsert({
+        where: { projectId_key: { projectId: project.id, key: input.key } },
+        create: {
+          projectId: project.id,
+          featureId: scope?.featureId,
+          workItemId: scope?.workItemId,
+          key: input.key,
+          title: input.title.trim(),
+          content: input.content,
+          durable,
+          pinned,
+        },
+        update: {
+          title: input.title.trim(),
+          content: input.content,
+          durable,
+          pinned,
+          ...(scope ? { featureId: scope.featureId, workItemId: scope.workItemId } : {}),
+        },
+      });
+
+      if (scope) {
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: project.id,
+            featureId: scope.featureId,
+            workItemId: scope.workItemId,
+            type: 'DECISION_RECORDED',
+            payloadJson: encodeJson({
+              key: decision.key,
+              title: decision.title,
+              durable: decision.durable,
+              pinned: decision.pinned,
+            }),
+          },
+        });
+      }
+
+      return decision;
+    });
+  }
+
+  async listDecisions(projectKey: string) {
+    const project = await this.requireProject(projectKey);
+    const decisions = await this.db.decision.findMany({
+      where: { projectId: project.id },
+      orderBy: { key: 'asc' },
+      include: {
+        feature: { select: { key: true } },
+        workItem: { select: { key: true } },
+      },
+    });
+
+    return {
+      project: project.key,
+      decisions: decisions.map((decision) => ({
+        key: decision.key,
+        title: decision.title,
+        content: decision.content,
+        durable: decision.durable,
+        pinned: decision.pinned,
+        featureKey: decision.feature?.key,
+        itemKey: decision.workItem?.key,
+        createdAt: decision.createdAt,
+      })),
+    };
+  }
+
+  async recordPendingItem(input: RecordPendingItemInput) {
+    if (!input.key.trim()) {
+      fail('PENDING_ITEM_KEY_REQUIRED');
+    }
+
+    if (!input.description.trim()) {
+      fail('PENDING_ITEM_DESCRIPTION_REQUIRED');
+    }
+
+    const project = await this.requireProject(input.projectKey);
+    const scope = await this.resolveEventScope(project.id, input.featureKey, input.itemKey);
+    const existing = await this.db.pendingItem.findUnique({
+      where: { projectId_key: { projectId: project.id, key: input.key } },
+    });
+
+    if (existing) {
+      fail('PENDING_ITEM_EXISTS');
+    }
+
+    return this.db.$transaction(async (transaction) => {
+      const pending = await transaction.pendingItem.create({
+        data: {
+          projectId: project.id,
+          featureId: scope?.featureId,
+          workItemId: scope?.workItemId,
+          key: input.key,
+          description: input.description,
+          blocking: input.blocking ?? false,
+          pinned: input.pinned ?? false,
+        },
+      });
+
+      if (scope) {
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: project.id,
+            featureId: scope.featureId,
+            workItemId: scope.workItemId,
+            type: 'PENDING_ITEM_RECORDED',
+            payloadJson: encodeJson({
+              key: pending.key,
+              description: pending.description,
+              blocking: pending.blocking,
+            }),
+          },
+        });
+      }
+
+      return pending;
+    });
+  }
+
+  async resolvePendingItem(input: ResolvePendingItemInput) {
+    const project = await this.requireProject(input.projectKey);
+    const pending = await this.db.pendingItem.findUnique({
+      where: { projectId_key: { projectId: project.id, key: input.key } },
+    });
+
+    if (!pending) {
+      fail('PENDING_ITEM_NOT_FOUND');
+    }
+
+    if ((pending as NonNullable<typeof pending>).resolved) {
+      fail('PENDING_ITEM_ALREADY_RESOLVED');
+    }
+
+    const resolved = await this.db.pendingItem.update({
+      where: { id: (pending as NonNullable<typeof pending>).id },
+      data: { resolved: true },
+    });
+
+    await this.db.workflowEvent.create({
+      data: {
+        projectId: project.id,
+        featureId: resolved.featureId,
+        workItemId: resolved.workItemId,
+        type: 'PENDING_ITEM_RESOLVED',
+        payloadJson: encodeJson({
+          key: resolved.key,
+          reason: input.reason,
+        }),
+      },
+    });
+
+    return resolved;
+  }
+
+  async listPendingItems(projectKey: string) {
+    const project = await this.requireProject(projectKey);
+    const pendingItems = await this.db.pendingItem.findMany({
+      where: { projectId: project.id },
+      orderBy: [{ resolved: 'asc' }, { blocking: 'desc' }, { key: 'asc' }],
+      include: {
+        feature: { select: { key: true } },
+        workItem: { select: { key: true } },
+      },
+    });
+
+    return {
+      project: project.key,
+      pendingItems: pendingItems.map((pending) => ({
+        key: pending.key,
+        description: pending.description,
+        blocking: pending.blocking,
+        resolved: pending.resolved,
+        featureKey: pending.feature?.key,
+        itemKey: pending.workItem?.key,
+        createdAt: pending.createdAt,
+      })),
+    };
+  }
+
+  private async resolveEventScope(
+    projectId: string,
+    featureKey?: string,
+    itemKey?: string,
+  ): Promise<{ featureId?: string; workItemId?: string } | undefined> {
+    if (!featureKey && !itemKey) {
+      return undefined;
+    }
+
+    if (itemKey && !featureKey) {
+      fail('ITEM_REQUIRES_FEATURE');
+    }
+
+    const feature = await this.db.feature.findFirst({
+      where: { projectId, key: featureKey as string },
+    });
+
+    if (!feature) {
+      fail('FEATURE_NOT_FOUND');
+    }
+
+    if (!itemKey) {
+      return { featureId: (feature as NonNullable<typeof feature>).id };
+    }
+
+    const item = await this.db.workItem.findFirst({
+      where: { featureId: (feature as NonNullable<typeof feature>).id, key: itemKey },
+    });
+
+    if (!item) {
+      fail('WORK_ITEM_NOT_FOUND');
+    }
+
+    return {
+      featureId: (feature as NonNullable<typeof feature>).id,
+      workItemId: (item as NonNullable<typeof item>).id,
+    };
   }
 
   async compactHistory(input: CompactHistoryInput) {

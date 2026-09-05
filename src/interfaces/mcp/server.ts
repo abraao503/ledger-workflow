@@ -40,6 +40,68 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_list_validations',
+    {
+      description: 'Lista as validações registradas de uma fatia, com os ids para leitura de log.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        purpose: z.enum(['RED', 'GREEN', 'CHECK']).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listValidations(input)),
+  );
+
+  server.registerTool(
+    'workflow_decision_record',
+    {
+      description: 'Registra (ou atualiza) uma decisão de execução; decisões duráveis aparecem no contexto.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        title: z.string(),
+        content: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+        durable: z.boolean().default(true),
+        pinned: z.boolean().default(false),
+      },
+    },
+    async (input) => runTool(() => app.ledger.recordDecision(input)),
+  );
+
+  server.registerTool(
+    'workflow_pending_record',
+    {
+      description: 'Registra uma pendência explícita; pendências não resolvidas aparecem no contexto.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        description: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+        blocking: z.boolean().default(false),
+        pinned: z.boolean().default(false),
+      },
+    },
+    async (input) => runTool(() => app.ledger.recordPendingItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_pending_resolve',
+    {
+      description: 'Resolve uma pendência registrada, com justificativa opcional.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        reason: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.resolvePendingItem(input)),
+  );
+
+  server.registerTool(
     'workflow_validation_log',
     {
       description: 'Lê o log retido de uma validação sem executar o perfil novamente.',

@@ -38,6 +38,52 @@ fatia não estiver informada, o contexto mostra o resumo da feature e suas
 fatias recentes. Para qualquer decisão de execução, use esse contexto antes
 de consultar os repositórios de código.
 
+### Inspeção do ledger
+
+Para descobrir chaves, ids e histórico sem recorrer ao banco direto:
+
+```bash
+rtk node dist/interfaces/cli/main.js project list
+rtk node dist/interfaces/cli/main.js feature list --project carara
+rtk node dist/interfaces/cli/main.js repository list --project carara
+rtk node dist/interfaces/cli/main.js item record --project carara --feature E6 --item 06
+rtk node dist/interfaces/cli/main.js validate list --project carara --feature E6 --item 06
+rtk node dist/interfaces/cli/main.js validate list --project carara --feature E6 --item 06 --purpose GREEN
+```
+
+`feature list` mostra features com suas fatias e estados; `repository list`
+mostra repositórios e os perfis de validação ativos (chave, programa, args) —
+é a referência para escolher `--repository` e `--profile` no `validate run`.
+`item record` expõe o registro detalhado da fatia (critérios, testes,
+autorização, baselines, revisões, decisões e pendências) e `validate list`
+retorna as validações registradas com os ids aceitos por `validate log`.
+No MCP, o par do `item record` é `workflow_record` e o do `validate list` é
+`workflow_list_validations`.
+
+### Decisões e pendências
+
+Divergências, decisões de produto e requisitos ausentes devem permanecer
+explícitos no ledger. Use:
+
+```bash
+rtk node dist/interfaces/cli/main.js decision add \
+  --project carara --feature E6 --item 06 \
+  --key DEC-EXECUCAO-OFFLINE --title "Execução sem provider" \
+  --content "O fluxo sintético roda sem provider externo" --pin
+rtk node dist/interfaces/cli/main.js decision list --project carara
+rtk node dist/interfaces/cli/main.js pending add \
+  --project carara --feature E6 --key PEND-PERFIL-BUILD \
+  --description "Definir perfil de build" --blocking
+rtk node dist/interfaces/cli/main.js pending list --project carara
+rtk node dist/interfaces/cli/main.js pending resolve \
+  --project carara --key PEND-PERFIL-BUILD --reason "perfil registrado"
+```
+
+Decisões duráveis (`--not-durable` desativa) e pendências não resolvidas
+aparecem no `context`; `--pin` protege o registro da retenção de histórico.
+No MCP, os equivalentes são `workflow_decision_record`,
+`workflow_pending_record` e `workflow_pending_resolve`.
+
 O CLI e o MCP são infraestrutura do agente. O usuário autoriza a fatia e o
 agente conduz o ciclo até o fechamento; não se deve pedir ao usuário que rode
 transições ou validações intermediárias.
@@ -115,10 +161,11 @@ diretório. A configuração de projeto em `../.codex/config.toml` registra o
 servidor `workflow` com aprovação para operações de escrita.
 
 As ferramentas principais são `workflow_context`, `workflow_record`,
-`workflow_define_item`, `workflow_authorize`, `workflow_validate`,
-`workflow_validation_log`, `workflow_confirm_structural_red`,
+`workflow_list_validations`, `workflow_define_item`, `workflow_authorize`,
+`workflow_validate`, `workflow_validation_log`, `workflow_confirm_structural_red`,
 `workflow_transition`, `workflow_reopen`, `workflow_invalidate_green`,
-`workflow_review` e `workflow_compact_history`.
+`workflow_review`, `workflow_decision_record`, `workflow_pending_record`,
+`workflow_pending_resolve` e `workflow_compact_history`.
 
 ## Dashboard web local
 

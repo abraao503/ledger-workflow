@@ -227,6 +227,40 @@ export type RecordRequest = {
   itemKey: string;
 };
 
+export type ListValidationsInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  purpose?: 'RED' | 'GREEN' | 'CHECK';
+};
+
+export type RecordDecisionInput = {
+  projectKey: string;
+  featureKey?: string;
+  itemKey?: string;
+  key: string;
+  title: string;
+  content: string;
+  durable?: boolean;
+  pinned?: boolean;
+};
+
+export type RecordPendingItemInput = {
+  projectKey: string;
+  featureKey?: string;
+  itemKey?: string;
+  key: string;
+  description: string;
+  blocking?: boolean;
+  pinned?: boolean;
+};
+
+export type ResolvePendingItemInput = {
+  projectKey: string;
+  key: string;
+  reason?: string;
+};
+
 export type CompactHistoryInput = {
   projectKey: string;
   featureKey: string;

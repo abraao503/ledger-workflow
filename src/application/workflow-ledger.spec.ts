@@ -253,4 +253,190 @@ describe('WorkflowLedger', () => {
       },
     });
   });
+
+  it('lists projects, features, repositories, validations and manages decisions and pending items', async () => {
+    await ledger.createProject({
+      key: 'studio',
+      name: 'Studio',
+      rootPath: '/tmp/studio',
+    });
+    await ledger.addRepository({
+      projectKey: 'studio',
+      key: 'web',
+      path: '/tmp/studio/web',
+    });
+    await ledger.createTemplate({
+      projectKey: 'studio',
+      key: 'studio-gates',
+      name: 'Studio Gates',
+      definition: { phases: ['G0', 'G1'] },
+    });
+    await ledger.createFeature({
+      projectKey: 'studio',
+      templateKey: 'studio-gates',
+      key: 'F1',
+      name: 'Painel',
+      summary: 'Painel web',
+    });
+    await ledger.defineWorkItem({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      key: '01',
+      phaseKey: 'G1',
+      position: 1,
+      title: 'Base do painel',
+      tddPolicy: 'OPTIONAL',
+      useCases: [
+        {
+          key: 'UC-01',
+          title: 'Consultar estado do ledger',
+          actor: 'Operador',
+          preconditions: 'Ledger acessível',
+          trigger: 'Abertura do painel',
+          expectedOutcome: 'Estado exibido',
+        },
+      ],
+      criteria: [
+        { key: 'AC-01', statement: 'Painel carrega estado do ledger', useCaseKey: 'UC-01' },
+      ],
+      tests: [],
+    });
+
+    const projects = await ledger.listProjects();
+    expect(projects.projects.map((project) => project.key)).toContain('studio');
+
+    const features = await ledger.listFeatures('studio');
+    expect(features.features).toHaveLength(1);
+    expect(features.features[0]).toMatchObject({ key: 'F1', items: [{ key: '01', state: 'DRAFT' }] });
+
+    await expect(ledger.listFeatures('missing')).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
+
+    const repository = await client.repository.findFirstOrThrow({ where: { key: 'web' } });
+    await client.validationProfile.create({
+      data: {
+        repositoryId: repository.id,
+        key: 'typecheck',
+        program: 'npm',
+        argsJson: JSON.stringify(['run', 'typecheck']),
+        cwd: '.',
+        parser: 'GENERIC',
+      },
+    });
+    const repositories = await ledger.listRepositories('studio');
+    expect(repositories.repositories).toEqual([
+      {
+        key: 'web',
+        path: '/tmp/studio/web',
+        expectedBranch: null,
+        profiles: [{
+          key: 'typecheck',
+          program: 'npm',
+          args: ['run', 'typecheck'],
+          parser: 'GENERIC',
+          cwd: '.',
+          timeoutSeconds: 60,
+        }],
+      },
+    ]);
+
+    await ledger.transitionWorkItem({ projectKey: 'studio', featureKey: 'F1', itemKey: '01', to: 'READY' });
+    await ledger.recordValidation({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+      repositoryKey: 'web',
+      profileKey: 'typecheck',
+      purpose: 'GREEN',
+      status: 'COMPLETED',
+      resultKind: 'PASS',
+      exitCode: 0,
+      sha: 'sha-1',
+      durationMs: 50,
+      summary: { suites: 1 },
+    });
+    const validations = await ledger.listValidations({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+    });
+    expect(validations.validations).toHaveLength(1);
+    expect(validations.validations[0]).toMatchObject({
+      purpose: 'GREEN',
+      repositoryKey: 'web',
+      profileKey: 'typecheck',
+      resultKind: 'PASS',
+      logAvailable: false,
+    });
+    expect(await ledger.listValidations({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+      purpose: 'RED',
+    })).toMatchObject({ validations: [] });
+
+    const decision = await ledger.recordDecision({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+      key: 'DEC-01',
+      title: 'Fonte única de estado',
+      content: 'O painel lê apenas do ledger',
+    });
+    expect(decision).toMatchObject({ key: 'DEC-01', durable: true });
+    await ledger.recordDecision({
+      projectKey: 'studio',
+      key: 'DEC-01',
+      title: 'Fonte única de estado',
+      content: 'Atualizado: o painel lê apenas do ledger',
+    });
+    const decisions = await ledger.listDecisions('studio');
+    expect(decisions.decisions).toHaveLength(1);
+    expect(decisions.decisions[0]).toMatchObject({ content: 'Atualizado: o painel lê apenas do ledger', itemKey: '01' });
+
+    const pending = await ledger.recordPendingItem({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      key: 'PEND-01',
+      description: 'Definir perfil de build',
+      blocking: true,
+    });
+    expect(pending).toMatchObject({ key: 'PEND-01', blocking: true, resolved: false });
+    await expect(ledger.recordPendingItem({
+      projectKey: 'studio',
+      key: 'PEND-01',
+      description: 'duplicada',
+    })).rejects.toMatchObject({ code: 'PENDING_ITEM_EXISTS' });
+    await expect(ledger.resolvePendingItem({
+      projectKey: 'studio',
+      key: 'PEND-01',
+      reason: 'perfil registrado',
+    })).resolves.toMatchObject({ resolved: true });
+    await expect(ledger.resolvePendingItem({
+      projectKey: 'studio',
+      key: 'PEND-01',
+    })).rejects.toMatchObject({ code: 'PENDING_ITEM_ALREADY_RESOLVED' });
+    await expect(ledger.resolvePendingItem({
+      projectKey: 'studio',
+      key: 'PEND-MISSING',
+    })).rejects.toMatchObject({ code: 'PENDING_ITEM_NOT_FOUND' });
+    await expect(ledger.recordPendingItem({
+      projectKey: 'studio',
+      itemKey: '01',
+      key: 'PEND-02',
+      description: 'sem feature',
+    })).rejects.toMatchObject({ code: 'ITEM_REQUIRES_FEATURE' });
+
+    const pendingItems = await ledger.listPendingItems('studio');
+    expect(pendingItems.pendingItems).toHaveLength(1);
+    expect(pendingItems.pendingItems[0]).toMatchObject({ key: 'PEND-01', resolved: true, featureKey: 'F1' });
+
+    const itemContext = await ledger.getContext({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+    });
+    expect(itemContext.durableDecisions).toEqual([
+      { key: 'DEC-01', title: 'Fonte única de estado' },
+    ]);
+  });
 });

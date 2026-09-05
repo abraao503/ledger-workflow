@@ -221,4 +221,215 @@ describe('workflow CLI', () => {
       },
     ]);
   });
+
+  it('routes inspection commands to the ledger read operations', async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const app = {
+      ledger: {
+        listValidations: async (input: unknown) => {
+          calls.push({ operation: 'listValidations', input });
+          return { validations: [{ id: 'validation-1', purpose: 'GREEN' }] };
+        },
+        getRecord: async (input: unknown) => {
+          calls.push({ operation: 'getRecord', input });
+          return { item: { key: '01', state: 'IMPLEMENTING' } };
+        },
+        listRepositories: async (input: unknown) => {
+          calls.push({ operation: 'listRepositories', input });
+          return { repositories: [] };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const output: string[] = [];
+    const cli = createCli({
+      app,
+      stdout: { write: (value) => {
+        output.push(value);
+        return true;
+      } },
+    });
+
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'validate',
+      'list',
+      '--project',
+      'carara',
+      '--feature',
+      'E6',
+      '--item',
+      '01',
+      '--purpose',
+      'GREEN',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'item',
+      'record',
+      '--project',
+      'carara',
+      '--feature',
+      'E6',
+      '--item',
+      '01',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'repository',
+      'list',
+      '--project',
+      'carara',
+    ]);
+
+    expect(calls).toEqual([
+      {
+        operation: 'listValidations',
+        input: { projectKey: 'carara', featureKey: 'E6', itemKey: '01', purpose: 'GREEN' },
+      },
+      {
+        operation: 'getRecord',
+        input: { projectKey: 'carara', featureKey: 'E6', itemKey: '01' },
+      },
+      { operation: 'listRepositories', input: 'carara' },
+    ]);
+    expect(JSON.parse(output[0])).toMatchObject({ validations: [{ id: 'validation-1' }] });
+    expect(JSON.parse(output[1])).toMatchObject({ item: { key: '01' } });
+  });
+
+  it('maps decision and pending commands to the ledger with scope and flags', async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const app = {
+      ledger: {
+        recordDecision: async (input: unknown) => {
+          calls.push({ operation: 'recordDecision', input });
+          return { key: 'DEC-01' };
+        },
+        listDecisions: async (input: unknown) => {
+          calls.push({ operation: 'listDecisions', input });
+          return { decisions: [] };
+        },
+        recordPendingItem: async (input: unknown) => {
+          calls.push({ operation: 'recordPendingItem', input });
+          return { key: 'PEND-01' };
+        },
+        listPendingItems: async (input: unknown) => {
+          calls.push({ operation: 'listPendingItems', input });
+          return { pendingItems: [] };
+        },
+        resolvePendingItem: async (input: unknown) => {
+          calls.push({ operation: 'resolvePendingItem', input });
+          return { key: 'PEND-01', resolved: true };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const output: string[] = [];
+    const cli = createCli({
+      app,
+      stdout: { write: (value) => {
+        output.push(value);
+        return true;
+      } },
+    });
+
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'decision',
+      'add',
+      '--project',
+      'carara',
+      '--feature',
+      'E6',
+      '--item',
+      '01',
+      '--key',
+      'DEC-01',
+      '--title',
+      'Fonte única',
+      '--content',
+      'O ledger é a fonte',
+      '--pin',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'decision',
+      'list',
+      '--project',
+      'carara',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'pending',
+      'add',
+      '--project',
+      'carara',
+      '--feature',
+      'E6',
+      '--key',
+      'PEND-01',
+      '--description',
+      'Definir perfil',
+      '--blocking',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'pending',
+      'list',
+      '--project',
+      'carara',
+    ]);
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      'pending',
+      'resolve',
+      '--project',
+      'carara',
+      '--key',
+      'PEND-01',
+      '--reason',
+      'perfil registrado',
+    ]);
+
+    expect(calls).toEqual([
+      {
+        operation: 'recordDecision',
+        input: {
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          key: 'DEC-01',
+          title: 'Fonte única',
+          content: 'O ledger é a fonte',
+          durable: true,
+          pinned: true,
+        },
+      },
+      { operation: 'listDecisions', input: 'carara' },
+      {
+        operation: 'recordPendingItem',
+        input: {
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: undefined,
+          key: 'PEND-01',
+          description: 'Definir perfil',
+          blocking: true,
+          pinned: false,
+        },
+      },
+      { operation: 'listPendingItems', input: 'carara' },
+      {
+        operation: 'resolvePendingItem',
+        input: { projectKey: 'carara', key: 'PEND-01', reason: 'perfil registrado' },
+      },
+    ]);
+    expect(JSON.parse(output[4])).toEqual({ key: 'PEND-01', resolved: true });
+  });
 });
