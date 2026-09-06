@@ -225,10 +225,10 @@ export function App() {
           <EmptyState title="Nenhuma fatia disponível" detail="Importe um workflow pelo CLI ou MCP para iniciar o ledger." />
         ) : (
           <>
-            <Overview dashboard={dashboard} />
+            <Overview dashboard={dashboard} catalog={catalog} />
             {(view === 'dashboard' || view === 'features') && <Pipeline dashboard={dashboard} />}
             {view === 'dashboard' && <DashboardGrid dashboard={dashboard} onAction={(action) => setModal({ action })} onOpenLog={openLog} onInspect={() => setModal({ action: findAction(dashboard, 'REINSPECT') })} inspection={inspection} />}
-            {view === 'features' && <FeaturesView dashboard={dashboard} />}
+            {view === 'features' && <FeaturesView dashboard={dashboard} catalog={catalog} onFeature={selectFeature} onItem={selectItem} />}
             {view === 'execution' && <ExecutionView dashboard={dashboard} primaryAction={primaryAction} onAction={(action) => setModal({ action })} onOpenLog={openLog} />}
             {view === 'review' && <ReviewView dashboard={dashboard} onAction={(action) => setModal({ action })} onOpenLog={openLog} />}
             {view === 'context' && <ContextView dashboard={dashboard} />}
@@ -301,7 +301,9 @@ function Header(props: {
   );
 }
 
-function Overview({ dashboard }: { dashboard: DashboardSnapshot }) {
+function Overview({ dashboard, catalog }: { dashboard: DashboardSnapshot; catalog: DashboardCatalogProject[] }) {
+  const project = catalog.find((candidate) => candidate.key === dashboard.selection.projectKey);
+  const featureCount = project?.features.length ?? dashboard.overview.activeFeatures;
   return (
     <section className="overview section-rule">
       <div>
@@ -310,8 +312,9 @@ function Overview({ dashboard }: { dashboard: DashboardSnapshot }) {
       </div>
       <div className="metric-strip">
         <Metric label="REPOSITÓRIOS" value={`${dashboard.overview.cleanRepositories}/${dashboard.overview.repositories} limpos`} healthy={dashboard.overview.cleanRepositories === dashboard.overview.repositories} />
-        <Metric label="FEATURES" value={`${dashboard.overview.activeFeatures} ativas`} />
-        <Metric label="FATIA ATUAL" value={dashboard.item.key} accent />
+        <Metric label="FEATURES" value={`${featureCount} no catálogo`} />
+        <Metric label="FATIAS ABERTAS" value={`${dashboard.overview.openItems}`} />
+        <Metric label="FATIA ATUAL" value={`${dashboard.feature.key}/${dashboard.item.key}`} accent />
         <Metric label="WAL" value={dashboard.overview.walMode.toUpperCase()} />
       </div>
     </section>
@@ -384,8 +387,61 @@ function Pending({ dashboard, onAction, onInspect, inspection }: { dashboard: Da
 
 function RecentSlices({ dashboard }: { dashboard: DashboardSnapshot }) { return <section className="panel recent-panel"><PanelHeader title="ÚLTIMAS FATIAS FECHADAS" meta="SELADAS NO LEDGER" />{dashboard.recentSlices.length ? <div className="recent-list">{dashboard.recentSlices.map((slice) => <article key={slice.key}><div><b>{slice.key}</b><StatusDot status="complete" /></div><p>{slice.title}</p><small>{slice.currentSha ?? 'sem SHA'} · {slice.state}</small></article>)}</div> : <EmptyState title="Ainda sem histórico" detail="Fatias fechadas aparecerão aqui." />}</section>; }
 
-function FeaturesView({ dashboard }: { dashboard: DashboardSnapshot }) { return <section className="panel feature-view"><PanelHeader title="FEATURES · VISÃO DE EXECUÇÃO" meta={dashboard.feature.key} /><div className="feature-summary"><span className="state-badge">{dashboard.feature.status}</span><h2>{dashboard.feature.name}</h2><p>{dashboard.feature.summary}</p></div><PipelineRows dashboard={dashboard} /></section>; }
-function PipelineRows({ dashboard }: { dashboard: DashboardSnapshot }) { return <div className="pipeline-rows">{dashboard.gates.map((gate) => <div key={gate.key}><span>{gate.label}</span><b className={gate.status}>{gate.status.toUpperCase()}</b><small>{gate.states.join(' · ')}</small></div>)}</div>; }
+function FeaturesView({ dashboard, catalog, onFeature, onItem }: { dashboard: DashboardSnapshot; catalog: DashboardCatalogProject[]; onFeature: (key: string) => void; onItem: (key: string) => void }) {
+  const project = catalog.find((candidate) => candidate.key === dashboard.selection.projectKey);
+  const selectedFeature = project?.features.find((candidate) => candidate.key === dashboard.selection.featureKey);
+  const items = selectedFeature?.items ?? [];
+  const openItems = items.filter((item) => item.state !== 'CLOSED').length;
+
+  return (
+    <div className="feature-view-stack">
+      <section className="panel feature-catalog">
+        <PanelHeader title="CATÁLOGO DE FEATURES" meta={`${project?.features.length ?? 0} no projeto`} />
+        <div className="feature-cards">
+          {(project?.features ?? []).map((feature) => {
+            const featureOpenItems = feature.items.filter((item) => item.state !== 'CLOSED').length;
+            return (
+              <button
+                type="button"
+                key={feature.key}
+                className={`feature-card ${feature.key === dashboard.feature.key ? 'selected' : ''}`}
+                aria-pressed={feature.key === dashboard.feature.key}
+                onClick={() => onFeature(feature.key)}
+              >
+                <span className="feature-card-head"><b>{feature.key}</b><small>{feature.status}</small></span>
+                <strong>{feature.name}</strong>
+                <span className="feature-card-count">{feature.items.length} fatias · {featureOpenItems ? `${featureOpenItems} abertas` : 'todas fechadas'}</span>
+                <small>{feature.currentPhaseKey ? `fase ${feature.currentPhaseKey}` : 'fase não definida'}</small>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="panel feature-view">
+        <PanelHeader title={`FATIAS · ${dashboard.feature.key}`} meta={`${items.length} no catálogo`} />
+        <div className="feature-summary">
+          <div className="feature-summary-top"><span className="state-badge">{dashboard.feature.status}</span><span className="feature-open-count">{openItems ? `${openItems} abertas` : 'todas fechadas'}</span></div>
+          <h2>{dashboard.feature.name}</h2>
+          <p>{dashboard.feature.summary}</p>
+        </div>
+        <div className="slice-list" role="list" aria-label={`Fatias da feature ${dashboard.feature.key}`}>
+          {items.map((item) => {
+            const current = item.key === dashboard.item.key;
+            const status = item.state === 'CLOSED' ? 'complete' : item.state === 'BLOCKED' ? 'blocked' : current ? 'active' : 'pending';
+            return (
+              <button type="button" key={item.key} className={`slice-row ${current ? 'selected' : ''}`} aria-current={current ? 'true' : undefined} onClick={() => onItem(item.key)}>
+                <span className="slice-position">{String(item.position).padStart(2, '0')}</span>
+                <span className="slice-main"><b>{item.key} · {item.title}</b><small>{item.phaseKey} · {item.state}</small></span>
+                <StatusDot status={status} />
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function ExecutionView({ dashboard, primaryAction, onAction, onOpenLog }: { dashboard: DashboardSnapshot; primaryAction?: DashboardAction; onAction: (action: DashboardAction) => void; onOpenLog: (id: string) => void }) { return <div className="single-view"><section className="panel"><PanelHeader title="FATIA EM EXECUÇÃO" meta={dashboard.item.state} /><div className="execution-hero"><span className="state-badge">{dashboard.item.key}</span><h2>{dashboard.item.title}</h2><p>{dashboard.item.summary}</p>{primaryAction && <ActionButton action={primaryAction} onClick={() => onAction(primaryAction)} />}</div></section><Evidence dashboard={dashboard} onOpenLog={onOpenLog} /></div>; }
 function ReviewView({ dashboard, onAction, onOpenLog }: { dashboard: DashboardSnapshot; onAction: (action: DashboardAction) => void; onOpenLog: (id: string) => void }) { const review = dashboard.validations.length ? dashboard.validations[0] : undefined; const action = dashboard.availableActions.find((candidate) => candidate.id === 'SUBMIT_REVIEW'); return <div className="single-view"><section className="panel"><PanelHeader title="REVISÃO & EVIDÊNCIAS" meta={dashboard.item.state} /><div className="review-hero"><h2>{dashboard.item.title}</h2><p>Verifique as evidências atuais, findings e critérios antes de emitir o veredito.</p>{action && <ActionButton action={action} onClick={() => onAction(action)} />}{review && <div className="review-stat">Última execução: <b>{review.resultKind}</b></div>}</div></section><Evidence dashboard={dashboard} onOpenLog={onOpenLog} /></div>; }

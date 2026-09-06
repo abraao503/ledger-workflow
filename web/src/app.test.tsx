@@ -45,6 +45,7 @@ describe('ledger dashboard', () => {
     expect(screen.getByText('Implementar comportamento')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Features', exact: true }));
-    await waitFor(() => expect(screen.getByText('FEATURES · VISÃO DE EXECUÇÃO')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('CATÁLOGO DE FEATURES')).toBeTruthy());
+    expect(screen.getByText('FATIAS · F1')).toBeTruthy();
   });
 });
