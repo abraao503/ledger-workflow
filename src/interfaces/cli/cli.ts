@@ -139,6 +139,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--kind <kind>', 'CODE|DOCUMENTATION|VALIDATION|OTHER', 'CODE')
     .option('--summary <summary>')
     .option('--tdd <policy>', 'REQUIRED|OPTIONAL|EXEMPT')
+    .option('--parent <key>', 'fatia original bloqueada pelo replanejamento')
     .requiredOption('--use-cases <json>')
     .requiredOption('--criteria <json>')
     .requiredOption('--tests <json>')
@@ -153,9 +154,28 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         kind: options.kind,
         summary: options.summary,
         tddPolicy: options.tdd,
+        parentItemKey: options.parent,
         useCases: parseJson(options.useCases, 'use-cases'),
         criteria: parseJson(options.criteria, 'criteria'),
         tests: parseJson(options.tests, 'tests'),
+      }), stdout);
+    });
+
+  item
+    .command('replan')
+    .description('Bloqueia uma fatia acima da política para replanejamento')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.replanWorkItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        actor: options.actor,
+        reason: options.reason,
       }), stdout);
     });
 

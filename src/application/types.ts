@@ -72,6 +72,7 @@ export type DefineWorkItemInput = {
   kind?: 'CODE' | 'DOCUMENTATION' | 'VALIDATION' | 'OTHER';
   summary?: string;
   tddPolicy?: 'REQUIRED' | 'OPTIONAL' | 'EXEMPT';
+  parentItemKey?: string;
   useCases: UseCaseInput[];
   criteria: AcceptanceCriterionInput[];
   tests: TestSpecificationInput[];
@@ -220,6 +221,14 @@ export type ReopenWorkItemInput = {
   reason: string;
 };
 
+export type ReplanWorkItemInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  actor: string;
+  reason: string;
+};
+
 export type ContextRequest = {
   projectKey: string;
   featureKey?: string;
@@ -259,6 +268,7 @@ export type PlanCheckItem = {
   title: string;
   phaseKey: string;
   state: string;
+  parentItemKey?: string;
   metrics: SliceSizeMetrics;
   status: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
   score: number;

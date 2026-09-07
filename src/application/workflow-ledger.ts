@@ -50,6 +50,7 @@ import type {
   PlanCheckResult,
   RecordRequest,
   RecordValidationInput,
+  ReplanWorkItemInput,
   ResolvePendingItemInput,
   RequestSliceSizeExceptionInput,
   ReopenWorkItemInput,
@@ -213,6 +214,33 @@ export class WorkflowLedger {
       (kind !== 'CODE' || tddPolicy !== 'REQUIRED' || input.tests.length > 0);
 
     return this.db.$transaction(async (transaction) => {
+      let parentItemId: string | undefined;
+      if (input.parentItemKey?.trim()) {
+        const parentItem = await transaction.workItem.findFirst({
+          where: {
+            featureId: feature.id,
+            key: input.parentItemKey.trim(),
+          },
+        });
+
+        if (!parentItem) {
+          fail('PARENT_ITEM_NOT_FOUND');
+        }
+
+        const replanEvent = await transaction.workflowEvent.findFirst({
+          where: {
+            workItemId: (parentItem as NonNullable<typeof parentItem>).id,
+            type: 'SLICE_SIZE_REPLANNED',
+          },
+        });
+
+        if ((parentItem as NonNullable<typeof parentItem>).state !== 'BLOCKED' || !replanEvent) {
+          fail('PARENT_ITEM_NOT_REPLANNED');
+        }
+
+        parentItemId = (parentItem as NonNullable<typeof parentItem>).id;
+      }
+
       const item = await transaction.workItem.create({
         data: {
           featureId: feature.id,
@@ -223,6 +251,7 @@ export class WorkflowLedger {
           kind,
           summary: input.summary,
           tddPolicy,
+          parentItemId,
           requirementsComplete,
         },
       });
@@ -775,6 +804,7 @@ export class WorkflowLedger {
       latestReview,
       latestReviewEvent,
       currentEvents,
+      lineage,
     ] =
       await Promise.all([
         this.db.authorization.findFirst({
@@ -847,6 +877,16 @@ export class WorkflowLedger {
           where: { workItemId: item.id, type: 'ITEM_TRANSITIONED' },
           orderBy: { createdAt: 'desc' },
         }),
+        this.db.workItem.findUnique({
+          where: { id: item.id },
+          select: {
+            parentItem: { select: { key: true, title: true, state: true } },
+            childItems: {
+              orderBy: { position: 'asc' },
+              select: { key: true, title: true, state: true },
+            },
+          },
+        }),
       ]);
 
     const latestValidations = ['RED', 'GREEN', 'CHECK']
@@ -900,6 +940,10 @@ export class WorkflowLedger {
               forbiddenEffects: decodeJson(authorization.forbiddenEffectsJson, []),
             }
           : undefined,
+        lineage: {
+          parent: lineage?.parentItem ?? undefined,
+          children: lineage?.childItems ?? [],
+        },
         baselines: snapshots.map((snapshot) => ({
           repository: snapshot.repository.key,
           branch: snapshot.branch,
@@ -958,7 +1002,7 @@ export class WorkflowLedger {
 
   async getRecord(input: RecordRequest) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
-    const [useCases, criteria, tests, authorization, snapshots, validations, reviews, decisions, pendingItems] =
+    const [useCases, criteria, tests, authorization, snapshots, validations, reviews, decisions, pendingItems, lineage] =
       await Promise.all([
         this.db.useCase.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
         this.db.acceptanceCriterion.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
@@ -981,6 +1025,16 @@ export class WorkflowLedger {
         }),
         this.db.decision.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
         this.db.pendingItem.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
+        this.db.workItem.findUnique({
+          where: { id: item.id },
+          select: {
+            parentItem: { select: { key: true, title: true, state: true } },
+            childItems: {
+              orderBy: { position: 'asc' },
+              select: { key: true, title: true, state: true },
+            },
+          },
+        }),
       ]);
 
     return {
@@ -994,6 +1048,10 @@ export class WorkflowLedger {
         tddPolicy: item.tddPolicy,
         currentSha: item.currentSha,
         requirementsComplete: item.requirementsComplete,
+      },
+      lineage: {
+        parent: lineage?.parentItem ?? undefined,
+        children: lineage?.childItems ?? [],
       },
       useCases,
       acceptanceCriteria: criteria,
@@ -1098,12 +1156,28 @@ export class WorkflowLedger {
         currentPhaseKey: true,
         items: {
           orderBy: { position: 'asc' },
-          select: { key: true, title: true, phaseKey: true, state: true, position: true },
+          select: {
+            key: true,
+            title: true,
+            phaseKey: true,
+            state: true,
+            position: true,
+            parentItem: { select: { key: true } },
+          },
         },
       },
     });
 
-    return { project: project.key, features };
+    return {
+      project: project.key,
+      features: features.map((feature) => ({
+        ...feature,
+        items: feature.items.map((item) => ({
+          ...item,
+          parentItemKey: item.parentItem?.key,
+        })),
+      })),
+    };
   }
 
   async checkPlan(input: PlanCheckRequest): Promise<PlanCheckResult> {
@@ -1127,6 +1201,7 @@ export class WorkflowLedger {
         criteria: { where: { required: true }, select: { id: true } },
         tests: { select: { id: true } },
         snapshots: { select: { repositoryId: true } },
+        parentItem: { select: { key: true } },
       },
     });
 
@@ -1144,6 +1219,7 @@ export class WorkflowLedger {
         title: item.title,
         phaseKey: item.phaseKey,
         state: item.state,
+        parentItemKey: item.parentItem?.key,
         metrics: assessment.metrics,
         status: assessment.status,
         score: assessment.score,
@@ -1361,6 +1437,78 @@ export class WorkflowLedger {
       });
 
       return { assessment, pending, item };
+    });
+  }
+
+  async replanWorkItem(input: ReplanWorkItemInput) {
+    if (!input.actor.trim()) {
+      fail('SLICE_REPLAN_ACTOR_REQUIRED');
+    }
+
+    if (!input.reason.trim()) {
+      fail('SLICE_REPLAN_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'DRAFT') {
+      fail('SLICE_REPLAN_STATE_INVALID');
+    }
+
+    const plan = await this.checkPlan({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+    });
+    const assessment = plan.items.find((candidate) => candidate.key === item.key);
+
+    if (!assessment) {
+      fail('WORK_ITEM_NOT_FOUND');
+    }
+
+    if ((assessment as NonNullable<typeof assessment>).status === 'OK') {
+      fail('SLICE_REPLAN_NOT_REQUIRED');
+    }
+
+    this.stateMachine.assertTransition('DRAFT', 'BLOCKED', {
+      blockReason: input.reason,
+    });
+
+    const requestKey = sliceSizeRequestKey(item.feature.key, item.key);
+    return this.db.$transaction(async (transaction) => {
+      const pending = await transaction.pendingItem.findUnique({
+        where: {
+          projectId_key: {
+            projectId: item.feature.projectId,
+            key: requestKey,
+          },
+        },
+      });
+      const resolvedPending = pending && !pending.resolved
+        ? await transaction.pendingItem.update({
+            where: { id: pending.id },
+            data: { resolved: true },
+          })
+        : pending;
+      const updated = await transaction.workItem.update({
+        where: { id: item.id },
+        data: { state: 'BLOCKED' },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_SIZE_REPLANNED',
+          payloadJson: encodeJson({
+            actor: input.actor.trim(),
+            reason: input.reason.trim(),
+            status: (assessment as NonNullable<typeof assessment>).status,
+            requestKey,
+          }),
+        },
+      });
+
+      return { assessment, item: updated, pending: resolvedPending };
     });
   }
 

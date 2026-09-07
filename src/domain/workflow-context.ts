@@ -25,6 +25,10 @@ export type WorkflowContextInput = {
       summary: string;
     };
   };
+  lineage?: {
+    parent?: { key: string; title: string; state: string };
+    children: Array<{ key: string; title: string; state: string }>;
+  };
   authorization?: {
     instruction: string;
     allowedEffects: string[];
@@ -82,6 +86,7 @@ export function buildWorkflowContext(
   const compact: WorkflowContext = {
     current: input.current,
     currentEvidence: input.currentEvidence,
+    lineage: input.lineage,
     authorization: input.authorization
       ? {
           instruction: input.authorization.instruction,

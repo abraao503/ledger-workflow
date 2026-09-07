@@ -107,6 +107,9 @@ model WorkItem {
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
   feature             Feature                @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  parentItemId        String?
+  parentItem          WorkItem?              @relation("WorkItemReplan", fields: [parentItemId], references: [id], onDelete: SetNull)
+  childItems          WorkItem[]             @relation("WorkItemReplan")
   useCases            UseCase[]
   criteria            AcceptanceCriterion[]
   tests               TestSpecification[]
@@ -120,6 +123,7 @@ model WorkItem {
   summaries           HistorySummary[]
   @@unique([featureId, key])
   @@index([featureId, position])
+  @@index([parentItemId])
 }
 
 model UseCase {

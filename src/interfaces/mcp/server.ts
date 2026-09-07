@@ -209,6 +209,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         kind: z.enum(['CODE', 'DOCUMENTATION', 'VALIDATION', 'OTHER']).optional(),
         summary: z.string().optional(),
         tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).optional(),
+        parentItemKey: z.string().optional(),
         useCases: z.array(z.object({
           key: z.string(),
           title: z.string(),
@@ -234,6 +235,21 @@ export function createMcpServer(app: WorkflowApp): McpServer {
       },
     },
     async (input) => runTool(() => app.ledger.defineWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_replan_item',
+    {
+      description: 'Bloqueia uma fatia acima da política para replanejamento e preserva sua linhagem.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        actor: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.replanWorkItem(input)),
   );
 
   server.registerTool(
