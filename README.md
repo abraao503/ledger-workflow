@@ -137,6 +137,63 @@ O CLI e o MCP são infraestrutura do agente. O usuário autoriza a fatia e o
 agente conduz o ciclo até o fechamento; não se deve pedir ao usuário que rode
 transições ou validações intermediárias.
 
+### Granularidade, exceções e replanejamento
+
+Toda fatia deve passar pela auditoria antes de avançar de `DRAFT` para
+`READY`:
+
+```bash
+rtk node dist/interfaces/cli/main.js plan check \
+  --project <project-key> --feature <feature-key>
+```
+
+O resultado `OK` permite a transição normal. Os resultados
+`SPLIT_RECOMMENDED` e `EXCEPTION_REQUIRED` são bloqueantes: o agente não deve
+implementar, autorizar, registrar RED ou tentar avançar a fatia por outro
+caminho. No MCP, a mesma auditoria é chamada por `workflow_plan_check`.
+
+Quando a fatia estiver grande, o agente deve solicitar a decisão e parar:
+
+```bash
+rtk node dist/interfaces/cli/main.js item request-size-exception \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --actor agent:<agent-id> --reason "<diagnóstico>"
+```
+
+No MCP, use `workflow_request_slice_size_exception`. Essa ferramenta registra
+uma pendência bloqueante; ela não cria aprovação e não libera `READY`. O
+agente não aprova a própria exceção e não usa `decision add` para simular uma
+aprovação.
+
+O caminho preferencial é replanejar. Primeiro bloqueie a fatia original:
+
+```bash
+rtk node dist/interfaces/cli/main.js item replan \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --actor agent:<agent-id> --reason "<resultado primário que será separado>"
+```
+
+Depois crie cada nova fatia com `--parent <item-key>`. No MCP, informe
+`parentItemKey` em `workflow_define_item`; o bloqueio é registrado por
+`workflow_replan_item`. A fatia original permanece
+`BLOCKED`; cada descendente precisa ser pequeno, independente e passar por
+`plan check` novamente. A linhagem aparece em `feature list`, `context`,
+`item record` e `plan check`.
+
+Se a divisão não for possível, somente o operador humano pode aprovar a
+exceção pela CLI, depois que houver uma solicitação registrada:
+
+```bash
+rtk node dist/interfaces/cli/main.js item approve-size \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --actor human:<identidade> --reason "<justificativa durável>"
+```
+
+`approve-size` é uma operação `OPERATOR-ONLY` e não é exposta como ferramenta
+MCP para agentes. A transição só reconhece uma aprovação acompanhada do evento
+específico de aprovação humana; uma decisão genérica com a mesma chave não
+libera a fatia.
+
 ### Ciclo de uma fatia de código
 
 1. consultar o contexto e confirmar a autorização;
