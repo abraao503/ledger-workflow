@@ -114,6 +114,19 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       emit(command, await app.ledger.listFeatures(options.project), stdout);
     });
 
+  const plan = program.command('plan').description('Audita a granularidade do planejamento');
+  plan
+    .command('check')
+    .description('Avalia o tamanho das fatias de uma feature sem alterar o ledger')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.checkPlan({
+        projectKey: options.project,
+        featureKey: options.feature,
+      }), stdout);
+    });
+
   const item = program.command('item').description('Define, autoriza e avança fatias');
   item
     .command('define')

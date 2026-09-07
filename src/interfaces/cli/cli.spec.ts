@@ -299,6 +299,41 @@ describe('workflow CLI', () => {
     expect(JSON.parse(output[1])).toMatchObject({ item: { key: '01' } });
   });
 
+  it('routes plan check to the read-only planning audit', async () => {
+    const calls: unknown[] = [];
+    const app = {
+      ledger: {
+        checkPlan: async (input: unknown) => {
+          calls.push(input);
+          return { project: 'workflow', feature: { key: 'P1' }, items: [] };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const output: string[] = [];
+    const cli = createCli({
+      app,
+      stdout: { write: (value) => {
+        output.push(value);
+        return true;
+      } },
+    });
+
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      '--json',
+      'plan',
+      'check',
+      '--project',
+      'workflow',
+      '--feature',
+      'P1',
+    ]);
+
+    expect(calls).toEqual([{ projectKey: 'workflow', featureKey: 'P1' }]);
+    expect(JSON.parse(output[0])).toMatchObject({ project: 'workflow', feature: { key: 'P1' } });
+  });
+
   it('maps decision and pending commands to the ledger with scope and flags', async () => {
     const calls: Array<{ operation: string; input: unknown }> = [];
     const app = {

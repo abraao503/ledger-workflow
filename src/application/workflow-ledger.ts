@@ -22,6 +22,11 @@ import {
   buildWorkflowContext,
   type WorkflowContext,
 } from '../domain/workflow-context.js';
+import {
+  assessSliceSize,
+  DEFAULT_SLICE_SIZE_POLICY,
+  type SliceSizePolicy,
+} from '../domain/slice-sizing.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
@@ -40,6 +45,8 @@ import type {
   ListValidationsInput,
   RecordDecisionInput,
   RecordPendingItemInput,
+  PlanCheckRequest,
+  PlanCheckResult,
   RecordRequest,
   RecordValidationInput,
   ResolvePendingItemInput,
@@ -1097,6 +1104,71 @@ export class WorkflowLedger {
     return { project: project.key, features };
   }
 
+  async checkPlan(input: PlanCheckRequest): Promise<PlanCheckResult> {
+    const project = await this.requireProject(input.projectKey);
+    const feature = await this.db.feature.findFirst({
+      where: { projectId: project.id, key: input.featureKey },
+      include: { template: true },
+    });
+
+    if (!feature) {
+      fail('FEATURE_NOT_FOUND');
+    }
+
+    const currentFeature = feature as NonNullable<typeof feature>;
+    const policy = readSliceSizePolicy(currentFeature.template.definitionJson);
+    const items = await this.db.workItem.findMany({
+      where: { featureId: currentFeature.id },
+      orderBy: { position: 'asc' },
+      include: {
+        useCases: { select: { id: true } },
+        criteria: { where: { required: true }, select: { id: true } },
+        tests: { select: { id: true } },
+        snapshots: { select: { repositoryId: true } },
+      },
+    });
+
+    const auditedItems = items.map((item) => {
+      const repositoryCount = new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
+      const assessment = assessSliceSize({
+        useCases: item.useCases.length,
+        requiredCriteria: item.criteria.length,
+        tests: item.tests.length,
+        repositories: repositoryCount,
+      }, policy);
+
+      return {
+        key: item.key,
+        title: item.title,
+        phaseKey: item.phaseKey,
+        state: item.state,
+        metrics: assessment.metrics,
+        status: assessment.status,
+        score: assessment.score,
+        violations: assessment.violations,
+        suggestions: assessment.suggestions,
+        repositoryScope: repositoryCount > 0 ? 'CAPTURED' as const : 'UNKNOWN' as const,
+      };
+    });
+
+    return {
+      project: project.key,
+      feature: {
+        key: currentFeature.key,
+        name: currentFeature.name,
+        summary: currentFeature.summary,
+      },
+      policy,
+      summary: {
+        total: auditedItems.length,
+        ok: auditedItems.filter((item) => item.status === 'OK').length,
+        splitRecommended: auditedItems.filter((item) => item.status === 'SPLIT_RECOMMENDED').length,
+        exceptionRequired: auditedItems.filter((item) => item.status === 'EXCEPTION_REQUIRED').length,
+      },
+      items: auditedItems,
+    };
+  }
+
   async listRepositories(projectKey: string) {
     const project = await this.requireProject(projectKey);
     const repositories = await this.db.repository.findMany({
@@ -1767,6 +1839,29 @@ export class WorkflowLedger {
 export const isWorkflowApplicationError = (
   error: unknown,
 ): error is WorkflowApplicationError => error instanceof WorkflowApplicationError;
+
+function readSliceSizePolicy(definitionJson: string): SliceSizePolicy {
+  const definition = decodeJson<Record<string, unknown>>(definitionJson, {});
+  const rawPolicy = definition.slicePolicy;
+
+  if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
+    return { ...DEFAULT_SLICE_SIZE_POLICY };
+  }
+
+  const candidate = rawPolicy as Record<string, unknown>;
+  const policy = {
+    maxUseCases: candidate.maxUseCases,
+    maxRequiredCriteria: candidate.maxRequiredCriteria,
+    maxTests: candidate.maxTests,
+    maxRepositories: candidate.maxRepositories,
+  };
+
+  if (Object.values(policy).every((value) => Number.isInteger(value) && (value as number) >= 1)) {
+    return policy as SliceSizePolicy;
+  }
+
+  return { ...DEFAULT_SLICE_SIZE_POLICY };
+}
 
 function emptyGreenEvidenceContext(): GreenEvidenceContext {
   return {

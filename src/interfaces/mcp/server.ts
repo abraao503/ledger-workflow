@@ -33,6 +33,18 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_plan_check',
+    {
+      description: 'Audita a granularidade das fatias de uma feature sem alterar o ledger.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.checkPlan(input)),
+  );
+
+  server.registerTool(
     'workflow_list_repositories',
     {
       description: 'Lista os repositórios do projeto e os perfis de validação ativos.',

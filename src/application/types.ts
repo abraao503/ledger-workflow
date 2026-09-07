@@ -1,5 +1,11 @@
 import type { PrismaClient } from '@prisma/client';
 
+import type {
+  SliceSizeMetrics,
+  SliceSizePolicy,
+  SliceSizeViolation,
+} from '../domain/slice-sizing.js';
+
 export type DatabaseClient = PrismaClient;
 
 export type CreateProjectInput = {
@@ -225,6 +231,41 @@ export type RecordRequest = {
   projectKey: string;
   featureKey: string;
   itemKey: string;
+};
+
+export type PlanCheckRequest = {
+  projectKey: string;
+  featureKey: string;
+};
+
+export type PlanCheckItem = {
+  key: string;
+  title: string;
+  phaseKey: string;
+  state: string;
+  metrics: SliceSizeMetrics;
+  status: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
+  score: number;
+  violations: SliceSizeViolation[];
+  suggestions: string[];
+  repositoryScope: 'CAPTURED' | 'UNKNOWN';
+};
+
+export type PlanCheckResult = {
+  project: string;
+  feature: {
+    key: string;
+    name: string;
+    summary: string;
+  };
+  policy: SliceSizePolicy;
+  summary: {
+    total: number;
+    ok: number;
+    splitRecommended: number;
+    exceptionRequired: number;
+  };
+  items: PlanCheckItem[];
 };
 
 export type ListValidationsInput = {

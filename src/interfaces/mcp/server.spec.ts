@@ -14,6 +14,11 @@ describe('workflow MCP server', () => {
         listRepositories: async (projectKey: string) => ({ project: projectKey, repositories: [] }),
         listDecisions: async (projectKey: string) => ({ project: projectKey, decisions: [] }),
         listPendingItems: async (projectKey: string) => ({ project: projectKey, pendingItems: [] }),
+        checkPlan: async (input: { projectKey: string; featureKey: string }) => ({
+          project: input.projectKey,
+          feature: { key: input.featureKey },
+          items: [],
+        }),
         getContext: async (input: { projectKey: string }) => {
           if (input.projectKey === 'missing') {
             throw new WorkflowApplicationError('PROJECT_NOT_FOUND');
@@ -66,8 +71,9 @@ describe('workflow MCP server', () => {
       'workflow_list_repositories',
       'workflow_list_validations',
       'workflow_pending_record',
-      'workflow_pending_resolve',
-      'workflow_record',
+        'workflow_pending_resolve',
+        'workflow_plan_check',
+        'workflow_record',
       'workflow_reopen',
       'workflow_review',
       'workflow_transition',
@@ -96,6 +102,18 @@ describe('workflow MCP server', () => {
       {
         type: 'text',
         text: expect.stringContaining('"project":"carara"'),
+      },
+    ]);
+
+    const planResult = await client.callTool({
+      name: 'workflow_plan_check',
+      arguments: { projectKey: 'carara', featureKey: 'E6' },
+    });
+    expect(planResult.isError).not.toBe(true);
+    expect(planResult.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('"feature":{"key":"E6"'),
       },
     ]);
 
