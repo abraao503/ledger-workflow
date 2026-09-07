@@ -140,6 +140,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--summary <summary>')
     .option('--tdd <policy>', 'REQUIRED|OPTIONAL|EXEMPT')
     .option('--parent <key>', 'fatia original bloqueada pelo replanejamento')
+    .option('--scope <json>', 'escopo técnico com repositórios e padrões de caminho')
     .requiredOption('--use-cases <json>')
     .requiredOption('--criteria <json>')
     .requiredOption('--tests <json>')
@@ -155,6 +156,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         summary: options.summary,
         tddPolicy: options.tdd,
         parentItemKey: options.parent,
+        scope: options.scope ? parseJson(options.scope, 'scope') : undefined,
         useCases: parseJson(options.useCases, 'use-cases'),
         criteria: parseJson(options.criteria, 'criteria'),
         tests: parseJson(options.tests, 'tests'),

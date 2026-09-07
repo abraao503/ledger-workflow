@@ -210,6 +210,12 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         summary: z.string().optional(),
         tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).optional(),
         parentItemKey: z.string().optional(),
+        scope: z.object({
+          repositories: z.array(z.object({
+            repositoryKey: z.string(),
+            paths: z.array(z.string()),
+          })),
+        }).optional(),
         useCases: z.array(z.object({
           key: z.string(),
           title: z.string(),

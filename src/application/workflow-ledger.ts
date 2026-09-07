@@ -27,6 +27,10 @@ import {
   DEFAULT_SLICE_SIZE_POLICY,
   type SliceSizePolicy,
 } from '../domain/slice-sizing.js';
+import {
+  decodeWorkItemScope,
+  validateWorkItemScope,
+} from '../domain/work-item-scope.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
@@ -170,6 +174,10 @@ export class WorkflowLedger {
 
   async defineWorkItem(input: DefineWorkItemInput) {
     const feature = await this.requireFeature(input.projectKey, input.featureKey);
+    const scopeIssues = input.scope ? validateWorkItemScope(input.scope) : [];
+    if (scopeIssues.length) {
+      fail(scopeIssues[0].code);
+    }
     const useCaseKeys = new Set<string>();
     const criterionKeys = new Set<string>();
     const testKeys = new Set<string>();
@@ -241,6 +249,21 @@ export class WorkflowLedger {
         parentItemId = (parentItem as NonNullable<typeof parentItem>).id;
       }
 
+      if (input.scope) {
+        const declaredRepositoryKeys = input.scope.repositories.map((repository) => repository.repositoryKey);
+        const repositories = await transaction.repository.findMany({
+          where: {
+            projectId: feature.projectId,
+            key: { in: declaredRepositoryKeys },
+          },
+          select: { key: true },
+        });
+
+        if (repositories.length !== declaredRepositoryKeys.length) {
+          fail('SCOPE_REPOSITORY_NOT_FOUND');
+        }
+      }
+
       const item = await transaction.workItem.create({
         data: {
           featureId: feature.id,
@@ -252,6 +275,7 @@ export class WorkflowLedger {
           summary: input.summary,
           tddPolicy,
           parentItemId,
+          scopeJson: input.scope ? encodeJson(input.scope) : undefined,
           requirementsComplete,
         },
       });
@@ -354,6 +378,18 @@ export class WorkflowLedger {
 
     if (repositories.length === 0) {
       fail('BASELINE_REPOSITORY_REQUIRED');
+    }
+
+    const declaredScope = decodeWorkItemScope(item.scopeJson);
+    if (declaredScope) {
+      const declaredRepositoryKeys = declaredScope.repositories
+        .map((repository) => repository.repositoryKey)
+        .sort();
+      const authorizedRepositoryKeys = [...input.repositoryKeys].sort();
+
+      if (JSON.stringify(declaredRepositoryKeys) !== JSON.stringify(authorizedRepositoryKeys)) {
+        fail('AUTHORIZATION_SCOPE_MISMATCH');
+      }
     }
 
     const baselines = await Promise.all(
@@ -938,6 +974,7 @@ export class WorkflowLedger {
               instruction: authorization.instruction,
               allowedEffects: decodeJson(authorization.allowedEffectsJson, []),
               forbiddenEffects: decodeJson(authorization.forbiddenEffectsJson, []),
+              scope: decodeWorkItemScope(item.scopeJson),
             }
           : undefined,
         lineage: {
@@ -1046,9 +1083,10 @@ export class WorkflowLedger {
         state: item.state,
         summary: item.summary,
         tddPolicy: item.tddPolicy,
-        currentSha: item.currentSha,
-        requirementsComplete: item.requirementsComplete,
-      },
+          currentSha: item.currentSha,
+          requirementsComplete: item.requirementsComplete,
+          scope: decodeWorkItemScope(item.scopeJson),
+        },
       lineage: {
         parent: lineage?.parentItem ?? undefined,
         children: lineage?.childItems ?? [],
@@ -1062,6 +1100,7 @@ export class WorkflowLedger {
             actor: authorization.actor,
             allowedEffects: decodeJson(authorization.allowedEffectsJson, []),
             forbiddenEffects: decodeJson(authorization.forbiddenEffectsJson, []),
+            scope: decodeWorkItemScope(item.scopeJson),
           }
         : undefined,
       baselines: snapshots.map((snapshot) => ({
@@ -1206,7 +1245,11 @@ export class WorkflowLedger {
     });
 
     const auditedItems = items.map((item) => {
-      const repositoryCount = new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
+      const scope = decodeWorkItemScope(item.scopeJson);
+      const scopeIssues = scope ? validateWorkItemScope(scope).map((issue) => issue.message) : [];
+      const repositoryCount = scope
+        ? scope.repositories.length
+        : new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
       const assessment = assessSliceSize({
         useCases: item.useCases.length,
         requiredCriteria: item.criteria.length,
@@ -1220,12 +1263,18 @@ export class WorkflowLedger {
         phaseKey: item.phaseKey,
         state: item.state,
         parentItemKey: item.parentItem?.key,
+        scope,
+        scopeIssues,
         metrics: assessment.metrics,
         status: assessment.status,
         score: assessment.score,
         violations: assessment.violations,
         suggestions: assessment.suggestions,
-        repositoryScope: repositoryCount > 0 ? 'CAPTURED' as const : 'UNKNOWN' as const,
+        repositoryScope: scope
+          ? 'DECLARED' as const
+          : repositoryCount > 0
+            ? 'CAPTURED' as const
+            : 'UNKNOWN' as const,
       };
     });
 

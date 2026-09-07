@@ -152,6 +152,23 @@ O resultado `OK` permite a transição normal. Os resultados
 implementar, autorizar, registrar RED ou tentar avançar a fatia por outro
 caminho. No MCP, a mesma auditoria é chamada por `workflow_plan_check`.
 
+Fatia de código pode declarar seu escopo técnico já no planejamento, antes do
+baseline de autorização:
+
+```bash
+rtk node dist/interfaces/cli/main.js item define \
+  --project <project-key> --feature <feature-key> --key <item-key> \
+  --phase G3 --position <number> --title "<título>" \
+  --scope '{"repositories":[{"repositoryKey":"workflow","paths":["src/application/**","src/interfaces/**"]}]}' \
+  --use-cases '<json>' --criteria '<json>' --tests '<json>'
+```
+
+O `plan check` expõe esse escopo como `repositoryScope: DECLARED` e preserva
+os padrões de caminho no registro e no contexto. Quando a fatia possui escopo
+declarado, a autorização precisa usar exatamente os mesmos repositórios; uma
+diferença é rejeitada antes da captura do baseline. Caminhos são relativos ao
+repositório e não podem escapar dele com caminhos absolutos ou `..`.
+
 Quando a fatia estiver grande, o agente deve solicitar a decisão e parar:
 
 ```bash

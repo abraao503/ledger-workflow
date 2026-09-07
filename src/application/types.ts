@@ -5,6 +5,7 @@ import type {
   SliceSizePolicy,
   SliceSizeViolation,
 } from '../domain/slice-sizing.js';
+import type { WorkItemScope } from '../domain/work-item-scope.js';
 
 export type DatabaseClient = PrismaClient;
 
@@ -73,6 +74,7 @@ export type DefineWorkItemInput = {
   summary?: string;
   tddPolicy?: 'REQUIRED' | 'OPTIONAL' | 'EXEMPT';
   parentItemKey?: string;
+  scope?: WorkItemScope;
   useCases: UseCaseInput[];
   criteria: AcceptanceCriterionInput[];
   tests: TestSpecificationInput[];
@@ -269,12 +271,14 @@ export type PlanCheckItem = {
   phaseKey: string;
   state: string;
   parentItemKey?: string;
+  scope?: WorkItemScope;
+  scopeIssues: string[];
   metrics: SliceSizeMetrics;
   status: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
   score: number;
   violations: SliceSizeViolation[];
   suggestions: string[];
-  repositoryScope: 'CAPTURED' | 'UNKNOWN';
+  repositoryScope: 'DECLARED' | 'CAPTURED' | 'UNKNOWN';
 };
 
 export type PlanCheckResult = {

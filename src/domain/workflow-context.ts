@@ -33,6 +33,12 @@ export type WorkflowContextInput = {
     instruction: string;
     allowedEffects: string[];
     forbiddenEffects: string[];
+    scope?: {
+      repositories: Array<{
+        repositoryKey: string;
+        paths: string[];
+      }>;
+    };
   };
   baselines: Array<{
     repository: string;
