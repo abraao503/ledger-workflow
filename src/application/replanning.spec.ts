@@ -206,4 +206,107 @@ describe('slice replanning', () => {
       tests: [{ key: 'T-01', name: 'RED', purpose: 'RED', criterionKey: 'AC-01' }],
     })).rejects.toMatchObject({ code: 'PARENT_ITEM_NOT_REPLANNED' });
   });
+
+  it('replans a semantically blocked slice and preserves descendant lineage', async () => {
+    await ledger.createTemplate({
+      projectKey: 'replanning',
+      key: 'semantic',
+      name: 'Semantic slices',
+      definition: {
+        slicePolicy: {
+          maxUseCases: 2,
+          maxRequiredCriteria: 4,
+          maxTests: 3,
+          maxRepositories: 1,
+        },
+      },
+    });
+    await ledger.createFeature({
+      projectKey: 'replanning',
+      templateKey: 'semantic',
+      key: 'F2',
+      name: 'Feature semanticamente bloqueada',
+      summary: 'Replanejamento por resultado primário',
+    });
+    await ledger.defineWorkItem({
+      projectKey: 'replanning',
+      featureKey: 'F2',
+      key: '01',
+      phaseKey: 'G3',
+      position: 1,
+      title: 'Reserva e recuperação juntas',
+      tddPolicy: 'REQUIRED',
+      useCases: [
+        {
+          key: 'UC-01',
+          title: 'Reservar fatia',
+          actor: 'Agente',
+          preconditions: 'Fatia livre',
+          trigger: 'Execução iniciada',
+          expectedOutcome: 'Reserva criada',
+        },
+        {
+          key: 'UC-02',
+          title: 'Recuperar reserva',
+          actor: 'Agente',
+          preconditions: 'Reserva expirada',
+          trigger: 'Nova execução iniciada',
+          expectedOutcome: 'Reserva recuperada',
+        },
+      ],
+      criteria: [
+        { key: 'AC-01', statement: 'Reserva exclusiva', useCaseKey: 'UC-01' },
+        { key: 'AC-02', statement: 'Expiração recuperável', useCaseKey: 'UC-02' },
+      ],
+      tests: [
+        { key: 'T-01', name: 'RED', purpose: 'RED', criterionKey: 'AC-01' },
+        { key: 'T-02', name: 'GREEN', purpose: 'GREEN', criterionKey: 'AC-01' },
+        { key: 'T-03', name: 'CHECK', purpose: 'CHECK', criterionKey: 'AC-02' },
+      ],
+    });
+
+    const plan = await ledger.checkPlan({ projectKey: 'replanning', featureKey: 'F2' });
+    expect(plan.items[0]).toMatchObject({
+      status: 'OK',
+      semanticStatus: 'BLOCKED',
+    });
+
+    const replanned = await ledger.replanWorkItem({
+      projectKey: 'replanning',
+      featureKey: 'F2',
+      itemKey: '01',
+      actor: 'agent:codex',
+      reason: 'Separar reserva e recuperação por resultado primário.',
+    });
+    expect(replanned.item.state).toBe('BLOCKED');
+
+    const child = await ledger.defineWorkItem({
+      projectKey: 'replanning',
+      featureKey: 'F2',
+      key: '02',
+      phaseKey: 'G3',
+      position: 2,
+      parentItemKey: '01',
+      title: 'Reserva exclusiva separada',
+      tddPolicy: 'REQUIRED',
+      useCases: [{
+        key: 'UC-01',
+        title: 'Reservar fatia',
+        actor: 'Agente',
+        preconditions: 'Fatia livre',
+        trigger: 'Execução iniciada',
+        expectedOutcome: 'Reserva criada',
+      }],
+      criteria: [{ key: 'AC-01', statement: 'Reserva exclusiva', useCaseKey: 'UC-01' }],
+      tests: [{ key: 'T-01', name: 'RED', purpose: 'RED', criterionKey: 'AC-01' }],
+    });
+
+    expect(child.state).toBe('DRAFT');
+    const record = await ledger.getRecord({
+      projectKey: 'replanning',
+      featureKey: 'F2',
+      itemKey: '02',
+    });
+    expect(record.lineage.parent).toMatchObject({ key: '01', state: 'BLOCKED' });
+  });
 });

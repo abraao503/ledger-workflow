@@ -165,7 +165,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   item
     .command('replan')
-    .description('Bloqueia uma fatia acima da política para replanejamento')
+    .description('Bloqueia uma fatia grande ou semanticamente inválida para replanejamento')
     .requiredOption('--project <key>')
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')

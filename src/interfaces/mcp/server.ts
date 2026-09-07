@@ -246,7 +246,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   server.registerTool(
     'workflow_replan_item',
     {
-      description: 'Bloqueia uma fatia acima da política para replanejamento e preserva sua linhagem.',
+      description: 'Bloqueia uma fatia grande ou semanticamente inválida para replanejamento e preserva sua linhagem.',
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string(),

@@ -239,7 +239,9 @@ export class WorkflowLedger {
         const replanEvent = await transaction.workflowEvent.findFirst({
           where: {
             workItemId: (parentItem as NonNullable<typeof parentItem>).id,
-            type: 'SLICE_SIZE_REPLANNED',
+            type: {
+              in: ['SLICE_SIZE_REPLANNED', 'SLICE_SEMANTIC_REPLANNED'],
+            },
           },
         });
 
@@ -1533,7 +1535,11 @@ export class WorkflowLedger {
       fail('WORK_ITEM_NOT_FOUND');
     }
 
-    if ((assessment as NonNullable<typeof assessment>).status === 'OK') {
+    const sizeStatus = (assessment as NonNullable<typeof assessment>).status;
+    const semanticStatus = (assessment as NonNullable<typeof assessment>).semanticStatus;
+    const semanticReplan = sizeStatus === 'OK' && semanticStatus === 'BLOCKED';
+
+    if (sizeStatus === 'OK' && !semanticReplan) {
       fail('SLICE_REPLAN_NOT_REQUIRED');
     }
 
@@ -1567,11 +1573,12 @@ export class WorkflowLedger {
           projectId: item.feature.projectId,
           featureId: item.featureId,
           workItemId: item.id,
-          type: 'SLICE_SIZE_REPLANNED',
+          type: semanticReplan ? 'SLICE_SEMANTIC_REPLANNED' : 'SLICE_SIZE_REPLANNED',
           payloadJson: encodeJson({
             actor: input.actor.trim(),
             reason: input.reason.trim(),
-            status: (assessment as NonNullable<typeof assessment>).status,
+            status: sizeStatus,
+            semanticStatus,
             requestKey,
           }),
         },

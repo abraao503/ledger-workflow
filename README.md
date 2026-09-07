@@ -188,7 +188,11 @@ uma pendência bloqueante; ela não cria aprovação e não libera `READY`. O
 agente não aprova a própria exceção e não usa `decision add` para simular uma
 aprovação.
 
-O caminho preferencial é replanejar. Primeiro bloqueie a fatia original:
+O caminho preferencial é replanejar. Uma fatia pode ser replanejada quando o
+tamanho está fora da política ou quando a auditoria semântica retorna
+`semanticStatus: BLOCKED`. No segundo caso, não é necessário abrir exceção de
+tamanho: o ledger registra um evento `SLICE_SEMANTIC_REPLANNED`; no primeiro,
+registra `SLICE_SIZE_REPLANNED`. Em ambos, primeiro bloqueie a fatia original:
 
 ```bash
 rtk node dist/interfaces/cli/main.js item replan \
