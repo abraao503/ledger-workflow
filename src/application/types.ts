@@ -238,6 +238,14 @@ export type PlanCheckRequest = {
   featureKey: string;
 };
 
+export type ApproveSliceSizeInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  actor: string;
+  reason: string;
+};
+
 export type PlanCheckItem = {
   key: string;
   title: string;

@@ -160,6 +160,24 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('approve-size')
+    .description('Registra uma exceção justificada para uma fatia acima da política')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.approveSliceSize({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        actor: options.actor,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  item
     .command('authorize')
     .requiredOption('--project <key>')
     .requiredOption('--feature <key>')

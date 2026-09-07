@@ -32,6 +32,7 @@ import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
 import type {
   AddRepositoryInput,
+  ApproveSliceSizeInput,
   AuthorizeWorkItemInput,
   CompactHistoryInput,
   ContextRequest,
@@ -1169,6 +1170,89 @@ export class WorkflowLedger {
     };
   }
 
+  async approveSliceSize(input: ApproveSliceSizeInput) {
+    if (!input.actor.trim()) {
+      fail('SLICE_SIZE_APPROVAL_ACTOR_REQUIRED');
+    }
+
+    if (!input.reason.trim()) {
+      fail('SLICE_SIZE_APPROVAL_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'DRAFT') {
+      fail('SLICE_SIZE_APPROVAL_STATE_INVALID');
+    }
+
+    const plan = await this.checkPlan({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+    });
+    const auditedItem = plan.items.find((candidate) => candidate.key === item.key);
+
+    if (!auditedItem) {
+      fail('WORK_ITEM_NOT_FOUND');
+    }
+
+    if ((auditedItem as NonNullable<typeof auditedItem>).status === 'OK') {
+      fail('SLICE_SIZE_APPROVAL_NOT_REQUIRED');
+    }
+
+    const decisionKey = sliceSizeApprovalKey(item.feature.key, item.key);
+    const content = [
+      `Ator: ${input.actor.trim()}`,
+      `Razão: ${input.reason.trim()}`,
+      `Diagnóstico: ${(auditedItem as NonNullable<typeof auditedItem>).status}`,
+      `Métricas: ${JSON.stringify((auditedItem as NonNullable<typeof auditedItem>).metrics)}`,
+    ].join('\n');
+
+    return this.db.$transaction(async (transaction) => {
+      const decision = await transaction.decision.upsert({
+        where: {
+          projectId_key: {
+            projectId: item.feature.projectId,
+            key: decisionKey,
+          },
+        },
+        create: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          key: decisionKey,
+          title: 'Exceção de granularidade aprovada',
+          content,
+          durable: true,
+          pinned: true,
+        },
+        update: {
+          featureId: item.featureId,
+          workItemId: item.id,
+          title: 'Exceção de granularidade aprovada',
+          content,
+          durable: true,
+          pinned: true,
+        },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_SIZE_APPROVED',
+          payloadJson: encodeJson({
+            actor: input.actor.trim(),
+            reason: input.reason.trim(),
+            decisionKey,
+            status: (auditedItem as NonNullable<typeof auditedItem>).status,
+          }),
+        },
+      });
+
+      return { decision, item };
+    });
+  }
+
   async listRepositories(projectKey: string) {
     const project = await this.requireProject(projectKey);
     const repositories = await this.db.repository.findMany({
@@ -1557,7 +1641,7 @@ export class WorkflowLedger {
   ): Promise<TransitionContext> {
     const usesGreenEvidence = ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED', 'CLOSED']
       .includes(input.to);
-    const [authorization, tests, red, review, greenContext] = await Promise.all([
+    const [authorization, tests, red, review, greenContext, sliceSizeContext] = await Promise.all([
       this.db.authorization.findFirst({ where: { workItemId: item.id } }),
       this.db.testSpecification.count({ where: { workItemId: item.id } }),
       this.db.validationRun.findFirst({
@@ -1576,6 +1660,12 @@ export class WorkflowLedger {
       usesGreenEvidence
         ? this.getGreenEvidenceContext(item, true)
         : Promise.resolve(emptyGreenEvidenceContext()),
+      input.to === 'READY'
+        ? this.getSliceSizeTransitionContext(item)
+        : Promise.resolve({
+            status: undefined as 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED' | undefined,
+            approved: false,
+          }),
     ]);
 
     const redEvidence = red?.resultKind === 'TEST_FAILURE' ? red : undefined;
@@ -1645,6 +1735,36 @@ export class WorkflowLedger {
       changesRequired: review?.verdict === 'CHANGES_REQUIRED',
       commitSha: input.commitSha,
       blockReason: input.reason,
+      sliceSizeStatus: sliceSizeContext.status,
+      sliceSizeApproved: sliceSizeContext.approved,
+    };
+  }
+
+  private async getSliceSizeTransitionContext(item: WorkItemWithFeature): Promise<{
+    status: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
+    approved: boolean;
+  }> {
+    const project = await this.db.project.findUnique({ where: { id: item.feature.projectId } });
+    if (!project) {
+      fail('PROJECT_NOT_FOUND');
+    }
+
+    const plan = await this.checkPlan({
+      projectKey: (project as NonNullable<typeof project>).key,
+      featureKey: item.feature.key,
+    });
+    const auditedItem = plan.items.find((candidate) => candidate.key === item.key);
+    const approval = await this.db.decision.findFirst({
+      where: {
+        workItemId: item.id,
+        key: sliceSizeApprovalKey(item.feature.key, item.key),
+        durable: true,
+      },
+    });
+
+    return {
+      status: auditedItem?.status ?? 'OK',
+      approved: Boolean(approval),
     };
   }
 
@@ -1839,6 +1959,10 @@ export class WorkflowLedger {
 export const isWorkflowApplicationError = (
   error: unknown,
 ): error is WorkflowApplicationError => error instanceof WorkflowApplicationError;
+
+function sliceSizeApprovalKey(featureKey: string, itemKey: string): string {
+  return `SLICE-SIZE-APPROVAL-${featureKey}-${itemKey}`;
+}
 
 function readSliceSizePolicy(definitionJson: string): SliceSizePolicy {
   const definition = decodeJson<Record<string, unknown>>(definitionJson, {});

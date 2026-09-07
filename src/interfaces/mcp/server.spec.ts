@@ -19,6 +19,10 @@ describe('workflow MCP server', () => {
           feature: { key: input.featureKey },
           items: [],
         }),
+        approveSliceSize: async (input: unknown) => ({
+          decision: { key: 'SIZE-APPROVAL', input },
+          item: { state: 'DRAFT' },
+        }),
         getContext: async (input: { projectKey: string }) => {
           if (input.projectKey === 'missing') {
             throw new WorkflowApplicationError('PROJECT_NOT_FOUND');
@@ -58,6 +62,7 @@ describe('workflow MCP server', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'workflow_authorize',
+      'workflow_approve_slice_size',
       'workflow_compact_history',
       'workflow_confirm_structural_red',
       'workflow_context',
@@ -114,6 +119,24 @@ describe('workflow MCP server', () => {
       {
         type: 'text',
         text: expect.stringContaining('"feature":{"key":"E6"'),
+      },
+    ]);
+
+    const approvalResult = await client.callTool({
+      name: 'workflow_approve_slice_size',
+      arguments: {
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '05',
+        actor: 'planner',
+        reason: 'gate indivisível',
+      },
+    });
+    expect(approvalResult.isError).not.toBe(true);
+    expect(approvalResult.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('SIZE-APPROVAL'),
       },
     ]);
 

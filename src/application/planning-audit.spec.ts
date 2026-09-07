@@ -113,6 +113,49 @@ describe('WorkflowLedger planning audit', () => {
         { key: 'T-03', name: 'CHECK amplo', purpose: 'CHECK', criterionKey: 'AC-03' },
       ],
     });
+    await ledger.createFeature({
+      projectKey: 'audit',
+      templateKey: 'sized',
+      key: 'F3',
+      name: 'Feature com exceção',
+      summary: 'Feature usada para validar aprovação explícita',
+    });
+    await ledger.defineWorkItem({
+      projectKey: 'audit',
+      featureKey: 'F3',
+      key: '01',
+      phaseKey: 'G3',
+      position: 1,
+      title: 'Fatia acima do orçamento',
+      tddPolicy: 'REQUIRED',
+      useCases: [
+        {
+          key: 'UC-01',
+          title: 'Resultado A',
+          actor: 'Agente',
+          preconditions: 'Planejamento definido',
+          trigger: 'Execução iniciada',
+          expectedOutcome: 'Resultado A entregue',
+        },
+        {
+          key: 'UC-02',
+          title: 'Resultado B',
+          actor: 'Agente',
+          preconditions: 'Planejamento definido',
+          trigger: 'Execução iniciada',
+          expectedOutcome: 'Resultado B entregue',
+        },
+      ],
+      criteria: [
+        { key: 'AC-01', statement: 'Resultado A correto', useCaseKey: 'UC-01' },
+        { key: 'AC-02', statement: 'Resultado B correto', useCaseKey: 'UC-02' },
+      ],
+      tests: [
+        { key: 'T-01', name: 'RED A', purpose: 'RED', criterionKey: 'AC-01' },
+        { key: 'T-02', name: 'GREEN A', purpose: 'GREEN', criterionKey: 'AC-01' },
+        { key: 'T-03', name: 'CHECK B', purpose: 'CHECK', criterionKey: 'AC-02' },
+      ],
+    });
   });
 
   afterAll(async () => {
@@ -181,5 +224,36 @@ describe('WorkflowLedger planning audit', () => {
       splitRecommended: 0,
       exceptionRequired: 0,
     });
+  });
+
+  it('blocks an oversized slice until an explicit durable approval exists', async () => {
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'audit',
+      featureKey: 'F3',
+      itemKey: '01',
+      to: 'READY',
+    })).rejects.toMatchObject({ code: 'SLICE_SIZE_APPROVAL_REQUIRED' });
+
+    const approval = await ledger.approveSliceSize({
+      projectKey: 'audit',
+      featureKey: 'F3',
+      itemKey: '01',
+      actor: 'responsável',
+      reason: 'A fatia mantém um gate indivisível com evidência única.',
+    });
+
+    expect(approval.decision).toMatchObject({
+      title: 'Exceção de granularidade aprovada',
+      durable: true,
+      pinned: true,
+    });
+    const ready = await ledger.transitionWorkItem({
+      projectKey: 'audit',
+      featureKey: 'F3',
+      itemKey: '01',
+      to: 'READY',
+    });
+    expect(ready.state).toBe('READY');
+    expect(approval.decision.content).toContain('responsável');
   });
 });

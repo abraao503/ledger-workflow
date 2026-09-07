@@ -45,6 +45,21 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_approve_slice_size',
+    {
+      description: 'Registra uma exceção justificada para uma fatia acima da política.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        actor: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.approveSliceSize(input)),
+  );
+
+  server.registerTool(
     'workflow_list_repositories',
     {
       description: 'Lista os repositórios do projeto e os perfis de validação ativos.',

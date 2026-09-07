@@ -334,6 +334,53 @@ describe('workflow CLI', () => {
     expect(JSON.parse(output[0])).toMatchObject({ project: 'workflow', feature: { key: 'P1' } });
   });
 
+  it('routes slice-size approval with actor and reason', async () => {
+    const calls: unknown[] = [];
+    const app = {
+      ledger: {
+        approveSliceSize: async (input: unknown) => {
+          calls.push(input);
+          return { decision: { key: 'SIZE-APPROVAL' }, item: { state: 'DRAFT' } };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const output: string[] = [];
+    const cli = createCli({
+      app,
+      stdout: { write: (value) => {
+        output.push(value);
+        return true;
+      } },
+    });
+
+    await cli.parseAsync([
+      'node',
+      'workflow',
+      '--json',
+      'item',
+      'approve-size',
+      '--project',
+      'workflow',
+      '--feature',
+      'P1',
+      '--item',
+      '01',
+      '--actor',
+      'planner',
+      '--reason',
+      'gate indivisível',
+    ]);
+
+    expect(calls).toEqual([{
+      projectKey: 'workflow',
+      featureKey: 'P1',
+      itemKey: '01',
+      actor: 'planner',
+      reason: 'gate indivisível',
+    }]);
+    expect(JSON.parse(output[0])).toMatchObject({ decision: { key: 'SIZE-APPROVAL' } });
+  });
+
   it('maps decision and pending commands to the ledger with scope and flags', async () => {
     const calls: Array<{ operation: string; input: unknown }> = [];
     const app = {

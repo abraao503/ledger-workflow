@@ -40,6 +40,8 @@ export type TransitionContext = {
   changesRequired?: boolean;
   commitSha?: string;
   blockReason?: string;
+  sliceSizeStatus?: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
+  sliceSizeApproved?: boolean;
 };
 
 export class WorkflowTransitionError extends Error {
@@ -90,6 +92,14 @@ export class WorkflowStateMachine {
     if (from === 'DRAFT' && to === 'READY') {
       if (!context.requirementsComplete) {
         transitionError('REQUIREMENTS_INCOMPLETE');
+      }
+
+      if (
+        context.sliceSizeStatus &&
+        context.sliceSizeStatus !== 'OK' &&
+        !context.sliceSizeApproved
+      ) {
+        transitionError('SLICE_SIZE_APPROVAL_REQUIRED');
       }
 
       return;
