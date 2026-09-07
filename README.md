@@ -42,6 +42,13 @@ Por padrão, o banco é `/caminho/para/7agentes/.workflow/workflow.sqlite`.
 Use `WORKFLOW_DATABASE_URL` ou `DATABASE_URL` para apontar para outro arquivo.
 O diretório `.workflow/` não deve ser versionado.
 
+## Estudos futuros
+
+Referências de projetos open source para evolução de coordenação, leases,
+dependências e execução durável estão resumidas em
+[`docs/ESTUDO-PROJETOS-SIMILARES.md`](docs/ESTUDO-PROJETOS-SIMILARES.md). Esse
+documento é material de pesquisa e não altera o protocolo operacional.
+
 ## Uso diário
 
 ```bash
