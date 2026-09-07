@@ -62,6 +62,17 @@ describe('validation executor', () => {
       ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
     });
 
+    it('classifies a known Jest test-discovery failure as a structural test failure', () => {
+      expect(
+        classifyCommandResult({
+          exitCode: 1,
+          stdout: 'No tests found, exiting with code 1\nPattern: src/application/missing.spec.ts - 0 matches',
+          stderr: '',
+          timedOut: false,
+        }, 'JEST'),
+      ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
+    });
+
     it('distinguishes a behavioral RED from a structural RED', () => {
       expect(classifyRedEvidence(
         'Test Suites: 1 failed, 1 total\nTests: 1 failed, 3 total',
@@ -263,7 +274,7 @@ describe('validation executor', () => {
     it('keeps a structural RED pending until the agent explains it', async () => {
       nextResult = {
         exitCode: 1,
-        stdout: 'Test Suites: 1 failed, 1 total\nTests: 0 total\nCannot find module',
+        stdout: 'No tests found, exiting with code 1\nPattern: src/application/missing.spec.ts - 0 matches',
         stderr: '',
         timedOut: false,
       };

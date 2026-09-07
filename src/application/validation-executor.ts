@@ -60,10 +60,14 @@ export function classifyCommandResult(
     return { status: 'COMPLETED', resultKind: 'PASS' };
   }
 
-  if (
-    parser === 'GENERIC' ||
-    /(?:Test Suites|Tests):\s+.*(?:failed|passed|total)/i.test(`${result.stdout}\n${result.stderr}`)
-  ) {
+  const output = `${result.stdout}\n${result.stderr}`;
+  const hasJestTestReport = /(?:Test Suites|Tests):\s+.*(?:failed|passed|total)/i.test(output);
+  const hasKnownJestStructuralFailure = parser === 'JEST' && (
+    /No tests found/i.test(output) ||
+    /Your test suite must contain at least one test/i.test(output)
+  );
+
+  if (parser === 'GENERIC' || hasJestTestReport || hasKnownJestStructuralFailure) {
     return { status: 'COMPLETED', resultKind: 'TEST_FAILURE' };
   }
 

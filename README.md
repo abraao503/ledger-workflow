@@ -238,6 +238,12 @@ verificação adicional: quando usa o mesmo perfil e a mesma worktree do GREEN,
 o ledger reaproveita a evidência sem executar a suíte novamente. Uma mudança
 na worktree invalida o reaproveitamento.
 
+Falhas conhecidas de descoberta estrutural do Jest, como `No tests found`, são
+registradas como `TEST_FAILURE` com evidência `STRUCTURAL`. Elas não avançam a
+fatia automaticamente: o agente deve ler o log e usar `confirm-red` com uma
+justificativa, sem executar o perfil novamente. Falhas de inicialização do
+processo continuam classificadas como infraestrutura.
+
 `validate run` inclui um trecho limitado do log para falhas. O log completo
 pode ser lido sem nova execução com:
 
