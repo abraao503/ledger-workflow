@@ -169,6 +169,12 @@ declarado, a autorização precisa usar exatamente os mesmos repositórios; uma
 diferença é rejeitada antes da captura do baseline. Caminhos são relativos ao
 repositório e não podem escapar dele com caminhos absolutos ou `..`.
 
+Além do tamanho, cada item traz `semanticStatus` e `semanticIssues`. O status
+`OK` indica resultado primário, critérios e testes coerentes. `BLOCKED` exige
+corrigir ou replanejar a fatia antes de continuar; `REVIEW_REQUIRED` exige que
+o agente leia o diagnóstico antes de decidir. Esses problemas não devem ser
+contornados com aprovação de exceção de tamanho.
+
 Quando a fatia estiver grande, o agente deve solicitar a decisão e parar:
 
 ```bash

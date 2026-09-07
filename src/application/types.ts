@@ -6,6 +6,10 @@ import type {
   SliceSizeViolation,
 } from '../domain/slice-sizing.js';
 import type { WorkItemScope } from '../domain/work-item-scope.js';
+import type {
+  SemanticIssue,
+  SemanticStatus,
+} from '../domain/planning-semantics.js';
 
 export type DatabaseClient = PrismaClient;
 
@@ -273,6 +277,8 @@ export type PlanCheckItem = {
   parentItemKey?: string;
   scope?: WorkItemScope;
   scopeIssues: string[];
+  semanticStatus: SemanticStatus;
+  semanticIssues: SemanticIssue[];
   metrics: SliceSizeMetrics;
   status: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
   score: number;

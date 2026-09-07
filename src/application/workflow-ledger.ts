@@ -31,6 +31,7 @@ import {
   decodeWorkItemScope,
   validateWorkItemScope,
 } from '../domain/work-item-scope.js';
+import { assessPlanSemantics } from '../domain/planning-semantics.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
@@ -1236,9 +1237,14 @@ export class WorkflowLedger {
       where: { featureId: currentFeature.id },
       orderBy: { position: 'asc' },
       include: {
-        useCases: { select: { id: true } },
-        criteria: { where: { required: true }, select: { id: true } },
-        tests: { select: { id: true } },
+        useCases: { select: { key: true, expectedOutcome: true } },
+        criteria: {
+          where: { required: true },
+          select: { key: true, useCase: { select: { key: true } } },
+        },
+        tests: {
+          select: { key: true, criterion: { select: { key: true } } },
+        },
         snapshots: { select: { repositoryId: true } },
         parentItem: { select: { key: true } },
       },
@@ -1247,6 +1253,18 @@ export class WorkflowLedger {
     const auditedItems = items.map((item) => {
       const scope = decodeWorkItemScope(item.scopeJson);
       const scopeIssues = scope ? validateWorkItemScope(scope).map((issue) => issue.message) : [];
+      const semantic = assessPlanSemantics({
+        useCases: item.useCases,
+        criteria: item.criteria.map((criterion) => ({
+          key: criterion.key,
+          useCaseKey: criterion.useCase?.key,
+        })),
+        tests: item.tests.map((test) => ({
+          key: test.key,
+          criterionKey: test.criterion?.key,
+        })),
+        requiresTests: item.kind === 'CODE' && item.tddPolicy === 'REQUIRED',
+      });
       const repositoryCount = scope
         ? scope.repositories.length
         : new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
@@ -1265,6 +1283,8 @@ export class WorkflowLedger {
         parentItemKey: item.parentItem?.key,
         scope,
         scopeIssues,
+        semanticStatus: semantic.status,
+        semanticIssues: semantic.issues,
         metrics: assessment.metrics,
         status: assessment.status,
         score: assessment.score,
