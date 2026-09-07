@@ -259,6 +259,21 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_claim_item',
+    {
+      description: 'Reserva uma fatia autorizada para um agente, rejeitando concorrência ativa.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        holder: z.string(),
+        durationSeconds: z.number().int().positive().max(86_400).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.claimWorkItem(input)),
+  );
+
+  server.registerTool(
     'workflow_authorize',
     {
       description: 'Autoriza uma fatia e captura os baselines Git somente leitura.',

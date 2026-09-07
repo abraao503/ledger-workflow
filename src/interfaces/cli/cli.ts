@@ -164,6 +164,24 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('claim')
+    .description('Reserva uma fatia autorizada para um agente por um período')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--holder <holder>')
+    .option('--duration <seconds>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.claimWorkItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        holder: options.holder,
+        durationSeconds: options.duration ? Number(options.duration) : undefined,
+      }), stdout);
+    });
+
+  item
     .command('replan')
     .description('Bloqueia uma fatia grande ou semanticamente inválida para replanejamento')
     .requiredOption('--project <key>')

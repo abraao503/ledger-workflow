@@ -235,6 +235,14 @@ export type ReplanWorkItemInput = {
   reason: string;
 };
 
+export type ClaimWorkItemInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  holder: string;
+  durationSeconds?: number;
+};
+
 export type ContextRequest = {
   projectKey: string;
   featureKey?: string;

@@ -39,6 +39,7 @@ import type {
   AddRepositoryInput,
   ApproveSliceSizeInput,
   AuthorizeWorkItemInput,
+  ClaimWorkItemInput,
   CompactHistoryInput,
   ContextRequest,
   CreateValidationProfileInput,
@@ -459,6 +460,79 @@ export class WorkflowLedger {
       });
 
       return { authorization, item: updated };
+    });
+  }
+
+  async claimWorkItem(input: ClaimWorkItemInput) {
+    const holder = input.holder.trim();
+    if (!holder) {
+      fail('SLICE_CLAIM_HOLDER_REQUIRED');
+    }
+
+    const durationSeconds = input.durationSeconds ?? 900;
+    if (!Number.isInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 86_400) {
+      fail('SLICE_CLAIM_DURATION_INVALID');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'AUTHORIZED') {
+      fail('SLICE_CLAIM_STATE_INVALID');
+    }
+
+    const acquiredAt = new Date();
+    const expiresAt = new Date(acquiredAt.getTime() + durationSeconds * 1_000);
+
+    return this.db.$transaction(async (transaction) => {
+      const activeLease = await transaction.workItemLease.findFirst({
+        where: {
+          workItemId: item.id,
+          releasedAt: null,
+        },
+        orderBy: { acquiredAt: 'desc' },
+      });
+
+      if (activeLease) {
+        if (activeLease.expiresAt <= acquiredAt) {
+          fail('SLICE_RESERVATION_EXPIRED_REQUIRES_RECOVERY');
+        }
+
+        fail('SLICE_ALREADY_RESERVED');
+      }
+
+      let lease;
+      try {
+        lease = await transaction.workItemLease.create({
+          data: {
+            workItemId: item.id,
+            holder,
+            acquiredAt,
+            expiresAt,
+          },
+        });
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          fail('SLICE_ALREADY_RESERVED');
+        }
+
+        throw error;
+      }
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_LEASE_ACQUIRED',
+          payloadJson: encodeJson({
+            holder,
+            acquiredAt,
+            expiresAt,
+            durationSeconds,
+          }),
+        },
+      });
+
+      return { lease, item };
     });
   }
 
@@ -2311,6 +2385,13 @@ export class WorkflowLedger {
 export const isWorkflowApplicationError = (
   error: unknown,
 ): error is WorkflowApplicationError => error instanceof WorkflowApplicationError;
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'P2002';
+}
 
 function sliceSizeApprovalKey(featureKey: string, itemKey: string): string {
   return `SLICE-SIZE-APPROVAL-${featureKey}-${itemKey}`;

@@ -62,6 +62,7 @@ describe('workflow MCP server', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'workflow_authorize',
+      'workflow_claim_item',
       'workflow_request_slice_size_exception',
       'workflow_compact_history',
       'workflow_confirm_structural_red',

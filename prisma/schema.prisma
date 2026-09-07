@@ -122,6 +122,7 @@ model WorkItem {
   pendingItems        PendingItem[]
   events              WorkflowEvent[]
   summaries           HistorySummary[]
+  leases              WorkItemLease[]
   @@unique([featureId, key])
   @@index([featureId, position])
   @@index([parentItemId])
@@ -196,6 +197,22 @@ model RepositorySnapshot {
   workItem     WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   @@index([workItemId, capturedAt])
+}
+
+model WorkItemLease {
+  id              String        @id @default(cuid())
+  workItemId      String
+  holder          String
+  acquiredAt      DateTime      @default(now())
+  expiresAt       DateTime
+  releasedAt      DateTime?
+  recoveredFromId String?
+  workItem        WorkItem      @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  recoveredFrom   WorkItemLease? @relation("LeaseRecovery", fields: [recoveredFromId], references: [id], onDelete: SetNull)
+  recoveries      WorkItemLease[] @relation("LeaseRecovery")
+  @@index([workItemId, expiresAt])
+  @@index([workItemId, releasedAt])
+  @@index([recoveredFromId])
 }
 
 model ValidationProfile {
