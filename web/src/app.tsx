@@ -8,11 +8,12 @@ import type {
   DashboardCatalogProject,
   DashboardSnapshot,
   DashboardValidation,
+  PlanCheckResult,
 } from '../../../src/application/types.js';
 
 type View = 'now' | 'project';
 type Selection = { projectKey?: string; featureKey?: string; itemKey?: string };
-type ModalState = { action: DashboardAction; logValidationId?: string } | null;
+type ModalState = { action: DashboardAction; logValidationId?: string; planCheck?: boolean } | null;
 
 type ContextShape = {
   current?: { nextAllowedTransition?: string };
@@ -30,6 +31,10 @@ type ContextShape = {
 type RecordShape = {
   tests?: Array<{ key: string; name: string; purpose: string; status?: string }>;
   authorization?: ContextShape['authorization'];
+  lineage?: {
+    parent?: { key: string; title: string; state: string };
+    children: Array<{ key: string; title: string; state: string }>;
+  };
 };
 
 type Pendency = { key: string; description: string; blocking: boolean; resolved?: boolean };
@@ -71,6 +76,8 @@ export function App() {
   const [logText, setLogText] = useState<string | null>(null);
   const [logLoading, setLogLoading] = useState(false);
   const [inspection, setInspection] = useState<Record<string, unknown> | null>(null);
+  const [planReport, setPlanReport] = useState<PlanCheckResult | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
 
   const loadCatalog = useCallback(async () => {
@@ -236,6 +243,38 @@ export function App() {
     }
   };
 
+  const openPlanCheck = async () => {
+    if (!dashboard) return;
+    setModal({ action: { id: 'PLAN_CHECK', label: 'Auditoria do planejamento', kind: 'maintenance', enabled: true }, planCheck: true });
+    setPlanLoading(true);
+    try {
+      const query = new URLSearchParams({
+        projectKey: dashboard.selection.projectKey,
+        featureKey: dashboard.selection.featureKey,
+      });
+      const response = await fetch(`/api/plan-check?${query.toString()}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { message?: string };
+        throw new Error(payload.message ?? 'Auditoria indisponível');
+      }
+      setPlanReport(await response.json() as PlanCheckResult);
+    } catch (cause) {
+      setPlanReport(null);
+      setModal(null);
+      setError(cause instanceof Error ? cause.message : 'Auditoria indisponível');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  const handleAction = (action: DashboardAction) => {
+    if (action.id === 'PLAN_CHECK') {
+      void openPlanCheck();
+      return;
+    }
+    setModal({ action });
+  };
+
   const primaryAction = useMemo(() => {
     if (!dashboard) return undefined;
     return dashboard.availableActions.find((action) => action.kind === 'primary')
@@ -270,7 +309,7 @@ export function App() {
             inspection={inspection}
             onSelectItem={(itemKey) => selectItem(itemKey)}
             onOpenProject={() => { setView('project'); writeView('project'); }}
-            onAction={(action) => setModal({ action })}
+            onAction={handleAction}
             onOpenLog={openLog}
           />
         ) : (
@@ -288,6 +327,8 @@ export function App() {
           dashboard={dashboard}
           logLoading={logLoading}
           logText={logText}
+          planLoading={planLoading}
+          planReport={planReport}
           onClose={() => { setModal(null); setLogText(null); }}
           onSubmit={submitAction}
         />
@@ -379,6 +420,7 @@ function NowView(props: {
         forbiddenEffects: (context.authorization ?? record.authorization)?.forbiddenEffects ?? [],
       }
     : undefined;
+  const lineage = record.lineage;
   const progressRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -416,6 +458,23 @@ function NowView(props: {
             <div className="effect-row">
               {auth.forbiddenEffects.slice(0, 4).map((effect) => <span key={effect} className="chip danger">{effect}</span>)}
             </div>
+          </div>
+        )}
+        {dashboard.lease && (
+          <div className="auth-card">
+            <span className="auth-label">{dashboard.lease.active ? 'Fatia reservada por um agente' : 'Reserva de fatia expirada'}</span>
+            <p>{dashboard.lease.holder} · {dashboard.lease.active ? 'até' : 'expirou em'} {formatTime(dashboard.lease.expiresAt)}</p>
+          </div>
+        )}
+        {lineage && (lineage.parent || lineage.children.length > 0) && (
+          <div className="auth-card">
+            <span className="auth-label">Linhagem de replanejamento</span>
+            {lineage.parent && (
+              <p>Origem: {lineage.parent.key} · {lineage.parent.title} ({humanState(lineage.parent.state)})</p>
+            )}
+            {lineage.children.length > 0 && (
+              <p>Derivadas: {lineage.children.map((child) => `${child.key} · ${child.title}`).join(' | ')}</p>
+            )}
           </div>
         )}
         <StepRail state={dashboard.item.state} />
@@ -644,11 +703,13 @@ function Intervene({ dashboard, primaryAction, inspection, onAction }: {
   );
 }
 
-function ActionDialog({ modal, dashboard, logLoading, logText, onClose, onSubmit }: {
+function ActionDialog({ modal, dashboard, logLoading, logText, planLoading, planReport, onClose, onSubmit }: {
   modal: NonNullable<ModalState>;
   dashboard: DashboardSnapshot | null;
   logLoading: boolean;
   logText: string | null;
+  planLoading: boolean;
+  planReport: PlanCheckResult | null;
   onClose: () => void;
   onSubmit: (fields: Record<string, unknown>) => void;
 }) {
@@ -666,6 +727,21 @@ function ActionDialog({ modal, dashboard, logLoading, logText, onClose, onSubmit
             <button className="icon-button" onClick={onClose} aria-label="Fechar">×</button>
           </div>
           {logLoading ? <div className="dialog-loading">Carregando log…</div> : <pre className="raw-log">{logText}</pre>}
+        </section>
+      </div>
+    );
+  }
+  if (modal.planCheck) {
+    return (
+      <div className="modal-backdrop" role="presentation">
+        <section className="dialog log-dialog" role="dialog" aria-modal="true" aria-labelledby="plan-title">
+          <div className="dialog-head">
+            <div><span className="eyebrow">PLAN CHECK</span><h2 id="plan-title">Auditoria do planejamento</h2></div>
+            <button className="icon-button" onClick={onClose} aria-label="Fechar">×</button>
+          </div>
+          {planLoading || !planReport
+            ? <div className="dialog-loading">Avaliando as fatias da entrega…</div>
+            : <PlanCheckReport report={planReport} currentItemKey={dashboard?.item.key ?? ''} />}
         </section>
       </div>
     );
@@ -725,6 +801,15 @@ function ActionFields({ action, dashboard, fields, set }: {
   if (action.id === 'REINSPECT') return <div className="field-grid">{input('repositoryKey', 'Repositório', action.options?.repositoryKeys?.[0] ?? 'repo')}</div>;
   if (action.id === 'COMPACT_HISTORY') return <div className="field-grid">{input('keepRecent', 'Fatias recentes preservadas', '2')}</div>;
   if (action.id === 'REOPEN') return <div className="field-grid">{input('actor', 'Ator', 'operator')}{input('reason', 'Motivo da reabertura', 'Retomar após correção do bloqueio')}</div>;
+  if (action.id === 'REQUEST_SIZE_EXCEPTION') {
+    return <div className="field-grid">{input('actor', 'Ator solicitante', 'agent:codex')}{input('reason', 'Diagnóstico / motivo da solicitação', 'Descreva por que a fatia não pode ser dividida')}</div>;
+  }
+  if (action.id === 'APPROVE_SIZE') {
+    return <div className="field-grid">{input('actor', 'Ator humano (human:identidade)', 'human:operador')}{input('reason', 'Justificativa durável da aprovação', 'Por que esta fatia permanece única')}</div>;
+  }
+  if (action.id === 'REPLAN') {
+    return <div className="field-grid">{input('actor', 'Ator', 'human:operador')}{input('reason', 'Motivo do replanejamento', 'Resultado primário que será separado')}</div>;
+  }
   if (action.id === 'APPROVE_TDD_EXCEPTION' || action.id === 'BLOCK' || action.id === 'INVALIDATE_GREEN') {
     return (
       <div className="field-grid">
@@ -734,6 +819,71 @@ function ActionFields({ action, dashboard, fields, set }: {
     );
   }
   return <p className="confirm-copy">Confirmar transição de <b>{humanState(dashboard?.item.state ?? '')}</b> para a próxima etapa?</p>;
+}
+
+function PlanCheckReport({ report, currentItemKey }: { report: PlanCheckResult; currentItemKey: string }) {
+  return (
+    <div className="plan-report">
+      <p className="dialog-help">
+        Política da entrega: até {report.policy.maxUseCases} {report.policy.maxUseCases === 1 ? 'caso de uso' : 'casos de uso'},
+        {' '}{report.policy.maxRequiredCriteria} critérios e {report.policy.maxTests} testes por fatia ·{' '}
+        {report.summary.ok}/{report.summary.total} dentro da política.
+      </p>
+      <div className="plan-items">
+        {report.items.map((item) => {
+          const tone = item.status === 'OK' ? 'ok' : item.status === 'EXCEPTION_REQUIRED' ? 'bad' : 'wait';
+          const semanticBlocked = item.semanticStatus === 'BLOCKED';
+          const semanticReview = item.semanticStatus === 'REVIEW_REQUIRED';
+          return (
+            <article key={item.key} className={`plan-item ${item.key === currentItemKey ? 'current' : ''}`}>
+              <div className="plan-item-head">
+                <b>{item.key} · {item.title}</b>
+                <span className={`status-pill ${tone}`}>{humanPlanStatus(item.status)}</span>
+              </div>
+              <p className="plan-metrics">
+                {item.metrics.useCases}/{report.policy.maxUseCases} casos de uso ·{' '}
+                {item.metrics.requiredCriteria}/{report.policy.maxRequiredCriteria} critérios ·{' '}
+                {item.metrics.tests}/{report.policy.maxTests} testes
+              </p>
+              <p className="plan-metrics">
+                Escopo de repositórios: {humanRepositoryScope(item.repositoryScope)}
+                {item.scopeIssues.length > 0 && ` · problemas: ${item.scopeIssues.join('; ')}`}
+              </p>
+              {(semanticBlocked || semanticReview) && (
+                <p className={`plan-issue ${semanticBlocked ? 'error' : 'warning'}`}>
+                  Auditoria semântica: {semanticBlocked ? 'bloqueada' : 'requer revisão'}
+                </p>
+              )}
+              {item.semanticIssues.map((issue, index) => (
+                <p key={`semantic-${index}`} className={`plan-issue ${issue.severity === 'ERROR' ? 'error' : 'warning'}`}>
+                  {issue.message} Sugestão: {issue.suggestion}
+                </p>
+              ))}
+              {item.violations.map((violation, index) => (
+                <p key={`violation-${index}`} className={`plan-issue ${violation.severity === 'ERROR' ? 'error' : 'warning'}`}>
+                  {violation.message}
+                </p>
+              ))}
+              {item.suggestions.map((suggestion, index) => (
+                <p key={`suggestion-${index}`} className="plan-suggestion">{suggestion}</p>
+              ))}
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function humanPlanStatus(status: string) {
+  if (status === 'OK') return 'Dentro da política';
+  if (status === 'EXCEPTION_REQUIRED') return 'Exceção necessária';
+  return 'Divisão recomendada';
+}
+function humanRepositoryScope(scope: string) {
+  if (scope === 'DECLARED') return 'declarado';
+  if (scope === 'CAPTURED') return 'capturado';
+  return 'indefinido';
 }
 
 function PanelHeader({ title, meta }: { title: string; meta?: ReactNode }) {
@@ -816,6 +966,9 @@ function defaultActionFields(action: DashboardAction, dashboard: DashboardSnapsh
   if (action.id === 'AUTHORIZE') defaults.repositoryKeys = dashboard?.repositories.map((repository) => repository.key).join(',') ?? '';
   if (action.id === 'COMPACT_HISTORY') defaults.keepRecent = '2';
   if (action.id === 'SUBMIT_REVIEW') { defaults.verdict = 'APPROVED'; defaults.reviewMode = 'SELF'; }
+  if (action.id === 'REQUEST_SIZE_EXCEPTION') defaults.actor = 'agent:codex';
+  if (action.id === 'APPROVE_SIZE') defaults.actor = 'human:operador';
+  if (action.id === 'REPLAN') defaults.actor = 'human:operador';
   return defaults;
 }
 function formatTime(value: string) {

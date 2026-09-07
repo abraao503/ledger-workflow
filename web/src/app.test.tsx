@@ -38,7 +38,16 @@ const snapshot = {
     unresolvedItems: [{ key: 'P-01', description: 'Confirmar fixture antes do GREEN.', blocking: true }],
     requiredChecks: [{ key: 'T-01', description: 'checagem da fixture', status: 'PENDING' }],
   },
-  record: { item: {}, tests: [{ key: 'T-01', name: 'checagem da fixture', purpose: 'CHECK', status: 'PLANNED' }], pendingItems: [] },
+  record: {
+    item: {},
+    tests: [{ key: 'T-01', name: 'checagem da fixture', purpose: 'CHECK', status: 'PLANNED' }],
+    pendingItems: [],
+    lineage: {
+      parent: { key: '00', title: 'Fatia original', state: 'BLOCKED' },
+      children: [{ key: '03', title: 'Derivada do replanejamento', state: 'DRAFT' }],
+    },
+  },
+  lease: { holder: 'agent:codex', acquiredAt: '2026-09-07T10:00:00.000Z', expiresAt: '2099-01-01T12:00:00.000Z', active: true },
   validations: [],
   pendingItems: [],
   recentSlices: [],
@@ -47,9 +56,32 @@ const snapshot = {
     { id: 'RUN_GREEN', label: 'Executar validação GREEN', kind: 'primary', enabled: true },
     { id: 'BLOCK', label: 'Bloquear ou justificar', kind: 'danger', enabled: true },
     { id: 'REINSPECT', label: 'Reinspecionar árvore Git', kind: 'maintenance', enabled: true },
+    { id: 'PLAN_CHECK', label: 'Auditar planejamento', kind: 'maintenance', enabled: true },
   ],
   health: { ok: true, database: 'sqlite', journalMode: 'wal', serverTime: new Date().toISOString() },
 } as const;
+
+const planReport = {
+  policy: { maxUseCases: 3, maxRequiredCriteria: 9, maxTests: 4 },
+  summary: { total: 2, ok: 1 },
+  items: [
+    {
+      key: '01', title: 'Implementar comportamento', status: 'SPLIT_RECOMMENDED',
+      metrics: { useCases: 4, requiredCriteria: 10, tests: 4 },
+      repositoryScope: 'DECLARED', scopeIssues: [],
+      semanticStatus: 'OK', semanticIssues: [],
+      violations: [{ severity: 'WARNING', message: 'A fatia excede o limite de casos de uso.' }],
+      suggestions: ['Divida o resultado B em uma fatia derivada.'],
+    },
+    {
+      key: '02', title: 'Próxima etapa', status: 'OK',
+      metrics: { useCases: 1, requiredCriteria: 2, tests: 1 },
+      repositoryScope: 'DECLARED', scopeIssues: [],
+      semanticStatus: 'OK', semanticIssues: [],
+      violations: [], suggestions: [],
+    },
+  ],
+};
 
 const catalog = {
   projects: [{
@@ -74,11 +106,13 @@ afterEach(() => {
 });
 
 describe('acompanhamento do workflow', () => {
+  const stubFetch = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () => String(url).includes('/plan-check') ? planReport : String(url).includes('/catalog') ? catalog : snapshot,
+  })));
+
   it('mostra o que o agente está fazendo agora e a entrega', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
-      ok: true,
-      json: async () => String(url).includes('/catalog') ? catalog : snapshot,
-    })));
+    stubFetch();
 
     render(<App />);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Implementar comportamento' })).toBeTruthy());
@@ -87,6 +121,10 @@ describe('acompanhamento do workflow', () => {
     expect(screen.getByText(/Você autorizou/)).toBeTruthy();
     expect(screen.getByText('O comportamento fica observável na interface.')).toBeTruthy();
     expect(screen.getByText('Confirmar fixture antes do GREEN.')).toBeTruthy();
+    expect(screen.getByText('Fatia reservada por um agente')).toBeTruthy();
+    expect(screen.getByText(/agent:codex/)).toBeTruthy();
+    expect(screen.getByText(/Origem: 00 · Fatia original/)).toBeTruthy();
+    expect(screen.getByText(/Derivadas: 03 · Derivada do replanejamento/)).toBeTruthy();
     expect(screen.queryByText('Overview Operacional')).toBeNull();
     expect(screen.queryByText('WAL')).toBeNull();
 
@@ -94,5 +132,25 @@ describe('acompanhamento do workflow', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entregas' })).toBeTruthy());
     expect(screen.getAllByText('Feature one').length).toBeGreaterThan(0);
     expect(screen.getByText('0/2 etapas')).toBeTruthy();
+  });
+
+  it('abre a auditoria do planejamento com política, métricas e sugestões', async () => {
+    stubFetch();
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Implementar comportamento' })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auditar planejamento' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Auditoria do planejamento' })).toBeTruthy());
+
+    await waitFor(() => expect(screen.getByText('Divisão recomendada')).toBeTruthy());
+    expect(screen.getByText(/2\/2 fatias|1\/2 dentro da política/)).toBeTruthy();
+    expect(screen.getByText(/4\/3 casos de uso/)).toBeTruthy();
+    expect(screen.getAllByText(/Escopo de repositórios: declarado/).length).toBe(2);
+    expect(screen.getByText('A fatia excede o limite de casos de uso.')).toBeTruthy();
+    expect(screen.getByText(/Divida o resultado B em uma fatia derivada./)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Auditoria do planejamento' })).toBeNull());
   });
 });

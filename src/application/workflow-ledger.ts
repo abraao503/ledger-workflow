@@ -2469,7 +2469,7 @@ function sliceSizeApprovalKey(featureKey: string, itemKey: string): string {
   return `SLICE-SIZE-APPROVAL-${featureKey}-${itemKey}`;
 }
 
-function sliceSizeRequestKey(featureKey: string, itemKey: string): string {
+export function sliceSizeRequestKey(featureKey: string, itemKey: string): string {
   return `SLICE-SIZE-REQUEST-${featureKey}-${itemKey}`;
 }
 

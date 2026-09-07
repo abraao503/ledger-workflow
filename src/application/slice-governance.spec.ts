@@ -95,7 +95,7 @@ describe('slice governance', () => {
       reason: 'O resultado ainda precisa ser replanejado ou justificado.',
     });
 
-    expect(result.assessment.status).toBe('SPLIT_RECOMMENDED');
+    expect(result.assessment?.status).toBe('SPLIT_RECOMMENDED');
     expect(result.pending).toMatchObject({
       key: 'SLICE-SIZE-REQUEST-F1-01',
       blocking: true,

@@ -401,7 +401,11 @@ export type DashboardActionId =
   | 'INVALIDATE_GREEN'
   | 'RUN_CHECK'
   | 'REINSPECT'
-  | 'COMPACT_HISTORY';
+  | 'COMPACT_HISTORY'
+  | 'PLAN_CHECK'
+  | 'REQUEST_SIZE_EXCEPTION'
+  | 'APPROVE_SIZE'
+  | 'REPLAN';
 
 export type DashboardAction = {
   id: DashboardActionId;
@@ -494,6 +498,12 @@ export type DashboardSnapshot = {
     expectedBranch?: string | null;
     profiles: Array<{ key: string; parser: string }>;
   }>;
+  lease?: {
+    holder: string;
+    acquiredAt: string;
+    expiresAt: string;
+    active: boolean;
+  } | null;
   availableActions: DashboardAction[];
   health: DashboardHealth;
 };

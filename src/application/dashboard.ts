@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { fail } from './errors.js';
-import { WorkflowLedger } from './workflow-ledger.js';
+import { WorkflowLedger, sliceSizeRequestKey } from './workflow-ledger.js';
 import type {
   DashboardAction,
   DashboardCatalogProject,
@@ -137,7 +137,7 @@ export class DashboardService {
       featureKey: currentFeature.key,
       itemKey: item.key,
     });
-    const [repositories, activeFeatures, openItems, allRepositories, health] = await Promise.all([
+    const [repositories, activeFeatures, openItems, allRepositories, health, lease] = await Promise.all([
       this.db.repository.findMany({
         where: { projectId: currentProject.id },
         orderBy: { key: 'asc' },
@@ -165,6 +165,10 @@ export class DashboardService {
         },
       }),
       this.getHealth(),
+      this.db.workItemLease.findFirst({
+        where: { workItemId: item.id, releasedAt: null },
+        orderBy: { expiresAt: 'desc' },
+      }),
     ]);
     const cleanRepositories = allRepositories.filter((repository) => repository.snapshots[0]?.dirty === false).length;
     const now = new Date();
@@ -246,6 +250,14 @@ export class DashboardService {
         expectedBranch: repository.expectedBranch,
         profiles: repository.validationProfiles,
       })),
+      lease: lease
+        ? {
+            holder: lease.holder,
+            acquiredAt: lease.acquiredAt.toISOString(),
+            expiresAt: lease.expiresAt.toISOString(),
+            active: lease.expiresAt > now,
+          }
+        : null,
       availableActions: makeActions({
         state: item.state,
         requirementsComplete: item.requirementsComplete,
@@ -253,6 +265,9 @@ export class DashboardService {
         tddPolicy: item.tddPolicy,
         repositoryKeys: repositories.map((repository) => repository.key),
         profileKeys: repositories.flatMap((repository) => repository.validationProfiles.map((profile) => profile.key)),
+        sizeExceptionPending: (record.pendingItems as Array<{ key: string; resolved?: boolean }>).some(
+          (pending) => pending.key === sliceSizeRequestKey(currentFeature.key, item.key) && !pending.resolved,
+        ),
       }),
       health,
     };
@@ -284,6 +299,7 @@ function makeActions(input: {
   tddPolicy: string;
   repositoryKeys: string[];
   profileKeys: string[];
+  sizeExceptionPending: boolean;
 }): DashboardAction[] {
   const validationOptions = {
     repositoryKeys: input.repositoryKeys,
@@ -360,8 +376,28 @@ function makeActions(input: {
   });
   add({ id: 'REINSPECT', label: 'Reinspecionar árvore Git', kind: 'maintenance', enabled: true, options: validationOptions });
   add({ id: 'COMPACT_HISTORY', label: 'Compactar histórico', kind: 'maintenance', enabled: true });
+  add({
+    id: 'PLAN_CHECK', label: 'Auditar planejamento', kind: 'maintenance', enabled: true,
+    reason: 'Avalia granularidade, semântica e escopo das fatias da entrega',
+  });
+  add({
+    id: 'REQUEST_SIZE_EXCEPTION', label: 'Solicitar exceção de tamanho', kind: 'secondary',
+    enabled: input.state === 'DRAFT',
+  });
+  add({
+    id: 'APPROVE_SIZE', label: 'Aprovar exceção de tamanho', kind: 'primary',
+    enabled: input.state === 'DRAFT' && input.sizeExceptionPending,
+    ...(input.state === 'DRAFT' && !input.sizeExceptionPending
+      ? { reason: 'Nenhuma solicitação de exceção pendente nesta fatia' }
+      : {}),
+  });
+  add({
+    id: 'REPLAN', label: 'Replanejar fatia', kind: 'danger',
+    enabled: input.state === 'DRAFT',
+  });
 
-  return actions.filter((action) => action.enabled || (['REINSPECT', 'COMPACT_HISTORY'] as string[]).includes(action.id));
+  return actions.filter((action) => action.enabled
+    || (['REINSPECT', 'COMPACT_HISTORY', 'PLAN_CHECK'] as string[]).includes(action.id));
 }
 
 export function isDashboardView(value: string | undefined): value is DashboardView {

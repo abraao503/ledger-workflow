@@ -23,6 +23,7 @@ const actionSchema = z.object({
     'APPROVE_TDD_EXCEPTION', 'START_IMPLEMENTING', 'RUN_GREEN',
     'MARK_READY_FOR_REVIEW', 'SUBMIT_REVIEW', 'RETURN_TO_TESTS',
     'CLOSE', 'BLOCK', 'REOPEN', 'INVALIDATE_GREEN', 'RUN_CHECK', 'REINSPECT', 'COMPACT_HISTORY',
+    'REQUEST_SIZE_EXCEPTION', 'APPROVE_SIZE', 'REPLAN',
   ]),
   projectKey: z.string().trim().min(1),
   featureKey: z.string().trim().min(1),
@@ -78,6 +79,14 @@ export function createWebApp(app: WorkflowApp) {
       itemKey: firstQuery(query.itemKey),
     }, view);
     response.json(snapshot);
+  }));
+
+  router.get('/plan-check', asyncRoute(async (request, response) => {
+    const query = request.query as Record<string, string | string[] | undefined>;
+    response.json(await app.ledger.checkPlan({
+      projectKey: requiredQuery(query, 'projectKey'),
+      featureKey: requiredQuery(query, 'featureKey'),
+    }));
   }));
 
   router.get('/validations/:validationId/log', asyncRoute(async (request, response) => {
@@ -187,6 +196,24 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
     case 'INVALIDATE_GREEN':
       return app.ledger.invalidateGreen({
         ...selection,
+        reason: requireField(input.reason, 'reason'),
+      });
+    case 'REQUEST_SIZE_EXCEPTION':
+      return app.ledger.requestSliceSizeException({
+        ...selection,
+        actor: requireField(input.actor, 'actor'),
+        reason: requireField(input.reason, 'reason'),
+      });
+    case 'APPROVE_SIZE':
+      return app.ledger.approveSliceSize({
+        ...selection,
+        actor: requireField(input.actor, 'actor'),
+        reason: requireField(input.reason, 'reason'),
+      });
+    case 'REPLAN':
+      return app.ledger.replanWorkItem({
+        ...selection,
+        actor: requireField(input.actor, 'actor'),
         reason: requireField(input.reason, 'reason'),
       });
     case 'REINSPECT': {
