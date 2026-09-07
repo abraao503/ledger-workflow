@@ -51,6 +51,7 @@ import type {
   RecordRequest,
   RecordValidationInput,
   ResolvePendingItemInput,
+  RequestSliceSizeExceptionInput,
   ReopenWorkItemInput,
   SubmitReviewInput,
   TransitionWorkItemInput,
@@ -1171,6 +1172,10 @@ export class WorkflowLedger {
   }
 
   async approveSliceSize(input: ApproveSliceSizeInput) {
+    if (!input.actor.trim().toLowerCase().startsWith('human:')) {
+      fail('SLICE_SIZE_APPROVAL_HUMAN_REQUIRED');
+    }
+
     if (!input.actor.trim()) {
       fail('SLICE_SIZE_APPROVAL_ACTOR_REQUIRED');
     }
@@ -1182,6 +1187,23 @@ export class WorkflowLedger {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
     if (item.state !== 'DRAFT') {
       fail('SLICE_SIZE_APPROVAL_STATE_INVALID');
+    }
+
+    const request = await this.db.pendingItem.findUnique({
+      where: {
+        projectId_key: {
+          projectId: item.feature.projectId,
+          key: sliceSizeRequestKey(item.feature.key, item.key),
+        },
+      },
+    });
+
+    if (!request) {
+      fail('SLICE_SIZE_APPROVAL_REQUEST_REQUIRED');
+    }
+
+    if ((request as NonNullable<typeof request>).resolved) {
+      fail('SLICE_SIZE_APPROVAL_REQUEST_RESOLVED');
     }
 
     const plan = await this.checkPlan({
@@ -1234,6 +1256,11 @@ export class WorkflowLedger {
         },
       });
 
+      const resolvedRequest = await transaction.pendingItem.update({
+        where: { id: (request as NonNullable<typeof request>).id },
+        data: { resolved: true },
+      });
+
       await transaction.workflowEvent.create({
         data: {
           projectId: item.feature.projectId,
@@ -1245,11 +1272,95 @@ export class WorkflowLedger {
             reason: input.reason.trim(),
             decisionKey,
             status: (auditedItem as NonNullable<typeof auditedItem>).status,
+            requestKey: resolvedRequest.key,
           }),
         },
       });
 
-      return { decision, item };
+      return { decision, pending: resolvedRequest, item };
+    });
+  }
+
+  async requestSliceSizeException(input: RequestSliceSizeExceptionInput) {
+    if (!input.actor.trim()) {
+      fail('SLICE_SIZE_REQUEST_ACTOR_REQUIRED');
+    }
+
+    if (!input.reason.trim()) {
+      fail('SLICE_SIZE_REQUEST_REASON_REQUIRED');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'DRAFT') {
+      fail('SLICE_SIZE_REQUEST_STATE_INVALID');
+    }
+
+    const plan = await this.checkPlan({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+    });
+    const assessment = plan.items.find((candidate) => candidate.key === item.key);
+
+    if (!assessment) {
+      fail('WORK_ITEM_NOT_FOUND');
+    }
+
+    if ((assessment as NonNullable<typeof assessment>).status === 'OK') {
+      fail('SLICE_SIZE_REQUEST_NOT_REQUIRED');
+    }
+
+    const requestKey = sliceSizeRequestKey(item.feature.key, item.key);
+    const description = [
+      `Solicitante: ${input.actor.trim()}`,
+      `Motivo: ${input.reason.trim()}`,
+      `Diagnóstico: ${(assessment as NonNullable<typeof assessment>).status}`,
+      `Métricas: ${JSON.stringify((assessment as NonNullable<typeof assessment>).metrics)}`,
+      'A fatia permanece bloqueada até replanejamento ou aprovação humana.',
+    ].join('\n');
+
+    return this.db.$transaction(async (transaction) => {
+      const pending = await transaction.pendingItem.upsert({
+        where: {
+          projectId_key: {
+            projectId: item.feature.projectId,
+            key: requestKey,
+          },
+        },
+        create: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          key: requestKey,
+          description,
+          blocking: true,
+          pinned: true,
+        },
+        update: {
+          featureId: item.featureId,
+          workItemId: item.id,
+          description,
+          blocking: true,
+          pinned: true,
+          resolved: false,
+        },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_SIZE_EXCEPTION_REQUESTED',
+          payloadJson: encodeJson({
+            actor: input.actor.trim(),
+            reason: input.reason.trim(),
+            requestKey,
+            status: (assessment as NonNullable<typeof assessment>).status,
+          }),
+        },
+      });
+
+      return { assessment, pending, item };
     });
   }
 
@@ -1754,17 +1865,34 @@ export class WorkflowLedger {
       featureKey: item.feature.key,
     });
     const auditedItem = plan.items.find((candidate) => candidate.key === item.key);
-    const approval = await this.db.decision.findFirst({
-      where: {
-        workItemId: item.id,
-        key: sliceSizeApprovalKey(item.feature.key, item.key),
-        durable: true,
-      },
-    });
+    const [approval, approvalEvent] = await Promise.all([
+      this.db.decision.findFirst({
+        where: {
+          workItemId: item.id,
+          key: sliceSizeApprovalKey(item.feature.key, item.key),
+          durable: true,
+        },
+      }),
+      this.db.workflowEvent.findFirst({
+        where: {
+          workItemId: item.id,
+          type: 'SLICE_SIZE_APPROVED',
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+    const approvalPayload = approvalEvent
+      ? decodeJson<{ actor?: string; decisionKey?: string }>(approvalEvent.payloadJson, {})
+      : {};
 
     return {
       status: auditedItem?.status ?? 'OK',
-      approved: Boolean(approval),
+      approved: Boolean(
+        approval &&
+        approvalEvent &&
+        approvalPayload.decisionKey === approval.key &&
+        approvalPayload.actor?.toLowerCase().startsWith('human:'),
+      ),
     };
   }
 
@@ -1962,6 +2090,10 @@ export const isWorkflowApplicationError = (
 
 function sliceSizeApprovalKey(featureKey: string, itemKey: string): string {
   return `SLICE-SIZE-APPROVAL-${featureKey}-${itemKey}`;
+}
+
+function sliceSizeRequestKey(featureKey: string, itemKey: string): string {
+  return `SLICE-SIZE-REQUEST-${featureKey}-${itemKey}`;
 }
 
 function readSliceSizePolicy(definitionJson: string): SliceSizePolicy {

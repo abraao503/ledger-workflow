@@ -334,13 +334,13 @@ describe('workflow CLI', () => {
     expect(JSON.parse(output[0])).toMatchObject({ project: 'workflow', feature: { key: 'P1' } });
   });
 
-  it('routes slice-size approval with actor and reason', async () => {
+  it('routes slice-size exception requests without approving them', async () => {
     const calls: unknown[] = [];
     const app = {
       ledger: {
-        approveSliceSize: async (input: unknown) => {
+        requestSliceSizeException: async (input: unknown) => {
           calls.push(input);
-          return { decision: { key: 'SIZE-APPROVAL' }, item: { state: 'DRAFT' } };
+          return { pending: { key: 'SIZE-REQUEST' }, item: { state: 'DRAFT' } };
         },
       },
     } as unknown as WorkflowApp;
@@ -358,7 +358,7 @@ describe('workflow CLI', () => {
       'workflow',
       '--json',
       'item',
-      'approve-size',
+      'request-size-exception',
       '--project',
       'workflow',
       '--feature',
@@ -378,7 +378,7 @@ describe('workflow CLI', () => {
       actor: 'planner',
       reason: 'gate indivisível',
     }]);
-    expect(JSON.parse(output[0])).toMatchObject({ decision: { key: 'SIZE-APPROVAL' } });
+    expect(JSON.parse(output[0])).toMatchObject({ pending: { key: 'SIZE-REQUEST' } });
   });
 
   it('maps decision and pending commands to the ledger with scope and flags', async () => {

@@ -19,8 +19,8 @@ describe('workflow MCP server', () => {
           feature: { key: input.featureKey },
           items: [],
         }),
-        approveSliceSize: async (input: unknown) => ({
-          decision: { key: 'SIZE-APPROVAL', input },
+        requestSliceSizeException: async (input: unknown) => ({
+          pending: { key: 'SIZE-REQUEST', input },
           item: { state: 'DRAFT' },
         }),
         getContext: async (input: { projectKey: string }) => {
@@ -62,7 +62,7 @@ describe('workflow MCP server', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'workflow_authorize',
-      'workflow_approve_slice_size',
+      'workflow_request_slice_size_exception',
       'workflow_compact_history',
       'workflow_confirm_structural_red',
       'workflow_context',
@@ -122,21 +122,21 @@ describe('workflow MCP server', () => {
       },
     ]);
 
-    const approvalResult = await client.callTool({
-      name: 'workflow_approve_slice_size',
+    const requestResult = await client.callTool({
+      name: 'workflow_request_slice_size_exception',
       arguments: {
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '05',
-        actor: 'planner',
+        actor: 'agent:planner',
         reason: 'gate indivisível',
       },
     });
-    expect(approvalResult.isError).not.toBe(true);
-    expect(approvalResult.content).toEqual([
+    expect(requestResult.isError).not.toBe(true);
+    expect(requestResult.content).toEqual([
       {
         type: 'text',
-        text: expect.stringContaining('SIZE-APPROVAL'),
+        text: expect.stringContaining('SIZE-REQUEST'),
       },
     ]);
 

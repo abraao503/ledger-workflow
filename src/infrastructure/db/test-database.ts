@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
@@ -11,17 +12,18 @@ export type TestDatabase = {
 };
 
 export function createTestDatabase(): TestDatabase {
-  const dataDirectory = path.resolve(process.cwd(), '.data');
+  const dataDirectory = path.join(tmpdir(), '7agentes-workflow-tests');
   mkdirSync(dataDirectory, { recursive: true });
   const databasePath = path.join(
     dataDirectory,
     `workflow-test-${process.pid}-${Date.now()}.sqlite`,
   );
   const databaseUrl = `file:${databasePath}`;
+  writeFileSync(databasePath, '');
 
   execFileSync(
-    'rtk',
-    ['prisma', 'migrate', 'deploy', '--schema=./prisma/schema.prisma'],
+    path.resolve(process.cwd(), 'node_modules/.bin/prisma'),
+    ['migrate', 'deploy', '--schema=./prisma/schema.prisma'],
     {
       cwd: process.cwd(),
       env: { ...process.env, DATABASE_URL: databaseUrl },

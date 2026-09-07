@@ -45,9 +45,9 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
-    'workflow_approve_slice_size',
+    'workflow_request_slice_size_exception',
     {
-      description: 'Registra uma exceção justificada para uma fatia acima da política.',
+      description: 'Solicita uma exceção de granularidade sem aprovar nem liberar a fatia.',
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string(),
@@ -56,7 +56,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         reason: z.string(),
       },
     },
-    async (input) => runTool(() => app.ledger.approveSliceSize(input)),
+    async (input) => runTool(() => app.ledger.requestSliceSizeException(input)),
   );
 
   server.registerTool(

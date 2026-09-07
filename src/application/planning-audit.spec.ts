@@ -234,11 +234,19 @@ describe('WorkflowLedger planning audit', () => {
       to: 'READY',
     })).rejects.toMatchObject({ code: 'SLICE_SIZE_APPROVAL_REQUIRED' });
 
+    await ledger.requestSliceSizeException({
+      projectKey: 'audit',
+      featureKey: 'F3',
+      itemKey: '01',
+      actor: 'agent:planner',
+      reason: 'A fatia mantém um gate indivisível e precisa de decisão do responsável.',
+    });
+
     const approval = await ledger.approveSliceSize({
       projectKey: 'audit',
       featureKey: 'F3',
       itemKey: '01',
-      actor: 'responsável',
+      actor: 'human:responsável',
       reason: 'A fatia mantém um gate indivisível com evidência única.',
     });
 

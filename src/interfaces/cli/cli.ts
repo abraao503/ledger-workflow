@@ -160,8 +160,26 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('request-size-exception')
+    .description('Solicita uma exceção de granularidade sem liberar a fatia')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.requestSliceSizeException({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        actor: options.actor,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  item
     .command('approve-size')
-    .description('Registra uma exceção justificada para uma fatia acima da política')
+    .description('OPERATOR-ONLY: aprova uma exceção solicitada por uma fatia acima da política')
     .requiredOption('--project <key>')
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')
