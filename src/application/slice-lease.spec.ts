@@ -130,4 +130,58 @@ describe('slice leases', () => {
       payloadJson: expect.stringContaining('agent:one'),
     });
   });
+
+  it('rejects early recovery and replaces an expired lease with lineage', async () => {
+    const claimed = await ledger.claimWorkItem({
+      projectKey: 'leases',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:one',
+      durationSeconds: 60,
+    });
+
+    await expect(ledger.recoverWorkItemLease({
+      projectKey: 'leases',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:two',
+      durationSeconds: 60,
+    })).rejects.toMatchObject({ code: 'SLICE_RESERVATION_NOT_EXPIRED' });
+
+    await client.workItemLease.update({
+      where: { id: claimed.lease.id },
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+    });
+
+    const recovered = await ledger.recoverWorkItemLease({
+      projectKey: 'leases',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:two',
+      durationSeconds: 60,
+    });
+
+    expect(recovered.previousLease).toMatchObject({
+      id: claimed.lease.id,
+      holder: 'agent:one',
+    });
+    expect(recovered.lease).toMatchObject({
+      holder: 'agent:two',
+      recoveredFromId: claimed.lease.id,
+      releasedAt: null,
+    });
+    expect(await client.workItemLease.count()).toBe(2);
+    await expect(ledger.recoverWorkItemLease({
+      projectKey: 'leases',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:three',
+      durationSeconds: 60,
+    })).rejects.toMatchObject({ code: 'SLICE_RESERVATION_NOT_EXPIRED' });
+    await expect(client.workflowEvent.findFirst({
+      where: { type: 'SLICE_LEASE_RECOVERED' },
+    })).resolves.toMatchObject({
+      payloadJson: expect.stringContaining('agent:two'),
+    });
+  });
 });

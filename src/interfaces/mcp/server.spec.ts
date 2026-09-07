@@ -81,6 +81,7 @@ describe('workflow MCP server', () => {
         'workflow_plan_check',
       'workflow_record',
       'workflow_replan_item',
+      'workflow_recover_item_lease',
       'workflow_reopen',
       'workflow_review',
       'workflow_transition',

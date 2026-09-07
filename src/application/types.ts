@@ -243,6 +243,8 @@ export type ClaimWorkItemInput = {
   durationSeconds?: number;
 };
 
+export type RecoverWorkItemLeaseInput = ClaimWorkItemInput;
+
 export type ContextRequest = {
   projectKey: string;
   featureKey?: string;

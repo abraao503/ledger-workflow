@@ -56,6 +56,7 @@ import type {
   PlanCheckResult,
   RecordRequest,
   RecordValidationInput,
+  RecoverWorkItemLeaseInput,
   ReplanWorkItemInput,
   ResolvePendingItemInput,
   RequestSliceSizeExceptionInput,
@@ -533,6 +534,77 @@ export class WorkflowLedger {
       });
 
       return { lease, item };
+    });
+  }
+
+  async recoverWorkItemLease(input: RecoverWorkItemLeaseInput) {
+    const holder = input.holder.trim();
+    if (!holder) {
+      fail('SLICE_CLAIM_HOLDER_REQUIRED');
+    }
+
+    const durationSeconds = input.durationSeconds ?? 900;
+    if (!Number.isInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 86_400) {
+      fail('SLICE_CLAIM_DURATION_INVALID');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'AUTHORIZED') {
+      fail('SLICE_CLAIM_STATE_INVALID');
+    }
+
+    const acquiredAt = new Date();
+    const expiresAt = new Date(acquiredAt.getTime() + durationSeconds * 1_000);
+
+    return this.db.$transaction(async (transaction) => {
+      const activeLease = await transaction.workItemLease.findFirst({
+        where: {
+          workItemId: item.id,
+          releasedAt: null,
+        },
+        orderBy: { acquiredAt: 'desc' },
+      });
+
+      if (!activeLease) {
+        fail('SLICE_RESERVATION_NOT_FOUND');
+      }
+
+      if ((activeLease as NonNullable<typeof activeLease>).expiresAt > acquiredAt) {
+        fail('SLICE_RESERVATION_NOT_EXPIRED');
+      }
+
+      const previousLease = await transaction.workItemLease.update({
+        where: { id: (activeLease as NonNullable<typeof activeLease>).id },
+        data: { releasedAt: acquiredAt },
+      });
+      const lease = await transaction.workItemLease.create({
+        data: {
+          workItemId: item.id,
+          holder,
+          acquiredAt,
+          expiresAt,
+          recoveredFromId: previousLease.id,
+        },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_LEASE_RECOVERED',
+          payloadJson: encodeJson({
+            previousLeaseId: previousLease.id,
+            previousHolder: previousLease.holder,
+            holder,
+            acquiredAt,
+            expiresAt,
+            durationSeconds,
+          }),
+        },
+      });
+
+      return { lease, previousLease, item };
     });
   }
 
