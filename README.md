@@ -1,355 +1,293 @@
-# Workflow ledger
+# Workflow Ledger
 
-Aplicação local e independente para registrar o fluxo de implementação de
-features e fatias. O SQLite do ledger é a única fonte de verdade para estado,
-sequência, autorização, critérios, evidências, revisões, pendências e
-fechamento. O CLI e o MCP consultam e atualizam esse estado; nenhuma fonte
-documental externa participa do fluxo operacional.
+Um ledger local para acompanhar entregas de software feitas por pessoas e
+agentes. Ele guarda o estado do trabalho, as decisões tomadas, os testes que
+foram executados e o commit que encerrou cada entrega.
 
-## Vocabulário do ledger
+O projeto oferece três formas de acesso ao mesmo ledger:
 
-Uma `feature` é uma capacidade ou frente de produto que pode exigir várias
-entregas. Ela tem uma chave própria (`featureKey`), como `E6`, `E7`, `E8` ou
-`E9`, nome, resumo, plano e uma coleção de fatias. O catálogo não é fixo e
-uma feature não é sinônimo de todo o projeto: o mesmo projeto pode ter várias
-features ativas ao mesmo tempo.
+- uma linha de comando (CLI);
+- um servidor MCP para agentes;
+- um dashboard web para inspeção e ações do dia a dia.
 
-Uma `fatia` é um `WorkItem`: a menor unidade autorizável e verificável do
-trabalho. Ela é endereçada pela combinação `featureKey + itemKey`, por exemplo
-`E9 + 06`. A fatia contém título, fase, posição, casos de uso, critérios de
-aceite, testes, autorização, baselines, validações, revisão e commit. O
-`itemKey` só é único dentro da feature; portanto, `01` de `E6` e `01` de `E9`
-são fatias diferentes.
+O estado fica em um banco SQLite local. Isso deixa o histórico perto do
+código, sem depender de um serviço externo.
 
-Fases ou gates (`G0` a `G7`, por exemplo) são marcos do ciclo de uma fatia,
-não features nem fatias. A posição ordena as fatias dentro da feature e não
-deve ser inferida a partir do texto da chave: existem chaves numéricas (`01`)
-e chaves de gate (`G4`, `G7`). O estado da fatia (`DRAFT`, `IMPLEMENTING`,
-`CLOSED` etc.) é a referência para saber se há trabalho aberto; o status
-`ACTIVE` da feature, sozinho, não substitui a inspeção de suas fatias.
+## O problema que ele resolve
 
-## Início rápido
+O Workflow Ledger coordena entregas de software feitas por pessoas e agentes.
+Ele transforma cada mudança em uma unidade pequena, autorizada e verificável,
+com escopo, critérios, testes, evidências, revisão e commit registrados.
 
-```bash
-rtk npm install
-rtk npm run prisma:generate
-rtk npm run prisma:migrate -- --name init
-rtk npm run build
-rtk node dist/interfaces/cli/main.js import --file /caminho/para/snapshot.json
+Isso resolve um problema comum em fluxos assistidos por agentes: o contexto se
+perde entre sessões, o trabalho começa fora do escopo, os mesmos testes são
+repetidos sem necessidade e nem sempre fica claro por que uma entrega foi
+considerada pronta.
+
+O ledger mantém esse histórico em um único lugar e controla a passagem entre
+planejamento, autorização, implementação, validação, revisão e fechamento.
+Assim, outra pessoa ou agente pode retomar o trabalho sabendo:
+
+- o que foi decidido e autorizado;
+- qual é a menor entrega em andamento;
+- quais repositórios e caminhos fazem parte do escopo;
+- quais testes já foram executados e com qual resultado;
+- qual é o próximo passo permitido.
+
+Ele é local, baseado em SQLite, e não substitui Git, CI ou uma ferramenta de
+gestão de produto. Sua função é registrar e proteger o fluxo entre essas
+ferramentas.
+
+## Como as peças se relacionam
+
+```mermaid
+flowchart LR
+    person["Pessoa"] --> cli["CLI"]
+    person --> web["Dashboard web"]
+    agent["Agente"] --> cli
+    agent --> mcp["Servidor MCP"]
+
+    cli --> db[("Ledger SQLite")]
+    web --> db
+    mcp --> db
+
+    db --> repos["Repositórios"]
+    db --> checks["Perfis de validação"]
 ```
 
-Por padrão, o banco é `/caminho/para/7agentes/.workflow/workflow.sqlite`.
-Use `WORKFLOW_DATABASE_URL` ou `DATABASE_URL` para apontar para outro arquivo.
-O diretório `.workflow/` não deve ser versionado.
+As três interfaces leem e escrevem no mesmo banco. O ledger consulta os
+repositórios para capturar baselines de Git e executa apenas perfis de
+validação previamente registrados.
 
-## Estudos futuros
+## Conceitos principais
 
-Referências de projetos open source para evolução de coordenação, leases,
-dependências e execução durável estão resumidas em
-[`docs/ESTUDO-PROJETOS-SIMILARES.md`](docs/ESTUDO-PROJETOS-SIMILARES.md). Esse
-documento é material de pesquisa e não altera o protocolo operacional.
+### Projeto, feature e fatia
 
-## Uso diário
+Um **projeto** reúne repositórios e trabalho relacionado.
 
-```bash
-rtk node dist/interfaces/cli/main.js project list
-rtk node dist/interfaces/cli/main.js feature list --project carara
-rtk node dist/interfaces/cli/main.js context --project carara --feature <feature-key> --item <item-key>
-rtk node dist/interfaces/cli/main.js item authorize --help
-rtk node dist/interfaces/cli/main.js validate run --help
-rtk node dist/interfaces/cli/main.js validate log --help
-rtk node dist/interfaces/cli/main.js validate confirm-red --help
-rtk node dist/interfaces/cli/main.js item transition --help
-rtk node dist/interfaces/cli/main.js item invalidate-green --help
+Uma **feature** é uma capacidade maior do produto. Ela pode ser dividida em
+várias entregas.
+
+Uma **fatia** (`WorkItem`) é uma dessas entregas. Ela deve ser pequena o
+suficiente para ser autorizada, implementada e verificada como uma unidade.
+Cada fatia tem uma chave própria dentro da feature. Por isso, `01` de duas
+features identifica duas fatias diferentes.
+
+Fases ou gates, como `G3` e `G6`, marcam momentos do ciclo. Eles não são
+features, fatias nem estados.
+
+### O ciclo de uma entrega
+
+```mermaid
+flowchart LR
+    draft["Definir"] --> plan["Planejar"]
+    plan --> ready["Planejamento aprovado"]
+    ready --> auth["Autorizar"]
+    auth --> tests["Definir testes"]
+    tests --> red["RED"]
+    tests --> exception["Exceção TDD"]
+    red --> implement["Implementar"]
+    exception --> implement
+    implement --> green["GREEN"]
+    green --> review["Revisar"]
+    review --> close["Fechar com commit"]
+    review --> changes["Fazer ajustes"]
+    changes --> tests
+    draft -.-> blocked["Bloquear"]
+    ready -.-> blocked
+    auth -.-> blocked
+    tests -.-> blocked
+    implement -.-> blocked
+    review -.-> blocked
+    blocked -.-> reopen["Reabrir no estado anterior"]
 ```
 
-O fluxo de descoberta é `project list` → `feature list` → escolha explícita de
-`featureKey` e `itemKey` → `context`/`item record`. No estado atual consultado
-do projeto `carara`, o catálogo inclui `E6`, `E7`, `E8` e `E9`; essa lista é
-apenas o estado do banco naquele momento, não uma enumeração fixa. Sempre leia
-`feature list` antes de assumir que existe uma chave ou que uma feature é a
-única em andamento.
+O caminho pode voltar para testes quando uma revisão pede mudanças. Qualquer
+etapa, exceto `CLOSED`, pode ser bloqueada. `reopen` devolve a fatia ao estado
+anterior ao bloqueio; `replan` bloqueia a fatia original e cria espaço para
+entregas descendentes.
 
-`context` é a consulta canônica para descobrir o estado, próximo estado,
-autorização, pendências, evidências, revisão e commit da fatia selecionada.
-Com `--feature` e sem `--item`, ele escolhe a primeira fatia não `CLOSED` por
-posição; se todas estiverem fechadas, escolhe a última por posição. Sem
-`--feature`, ele escolhe a feature `ACTIVE` atualizada mais recentemente —
-com várias features ativas isso é uma conveniência não determinística para a
-intenção do agente, portanto prefira informar ambas as chaves.
+<details>
+<summary>Estados registrados pelo ledger</summary>
 
-Substitua os placeholders antes de executar os comandos abaixo:
+| Estado | Significado |
+| --- | --- |
+| `DRAFT` | definição ainda incompleta |
+| `READY` | requisitos completos e planejamento liberado |
+| `AUTHORIZED` | autorização registrada e baselines capturados |
+| `TESTS_DEFINED` | testes definidos |
+| `RED_CONFIRMED` | RED registrado e confirmado |
+| `TDD_EXCEPTION_APPROVED` | exceção documentada ao RED obrigatório |
+| `IMPLEMENTING` | implementação em andamento |
+| `GREEN_CONFIRMED` | GREEN passou em todos os repositórios autorizados |
+| `READY_FOR_REVIEW` | evidência GREEN válida, aguardando revisão |
+| `APPROVED` | revisão aprovada |
+| `CHANGES_REQUIRED` | revisão exige mudanças |
+| `BLOCKED` | fluxo interrompido com um motivo |
+| `CLOSED` | commit registrado; estado final |
+
+</details>
+
+### RED, GREEN e CHECK
+
+- **RED** roda os testes antes da implementação. Uma falha comportamental mostra
+  que o teste detecta o comportamento que ainda falta. Uma falha estrutural,
+  como `No tests found`, exige uma justificativa antes de ser confirmada.
+- **GREEN** roda o perfil depois da implementação. A fatia só recebe esse
+  estado quando todos os repositórios autorizados passam.
+- **CHECK** registra uma verificação adicional. Se usar o mesmo perfil e a
+  mesma worktree do GREEN, o ledger reaproveita a evidência sem repetir a
+  suíte.
+
+Se a worktree mudar depois do GREEN, a evidência fica obsoleta. É preciso
+registrar a invalidação e executar GREEN novamente antes da revisão.
+
+## Comece rápido
+
+### Requisitos
+
+- Node.js 20 ou mais recente;
+- npm;
+- Git, se você for cadastrar repositórios e executar validações.
+
+### Instale e compile
+
+Execute os comandos a partir desta pasta:
 
 ```bash
-rtk node dist/interfaces/cli/main.js context \
-  --project carara --feature <feature-key> --item <item-key>
-rtk node dist/interfaces/cli/main.js item record \
-  --project carara --feature <feature-key> --item <item-key>
+npm install
+npm run prisma:generate
+npm run prisma:migrate -- --name init
+npm run build
 ```
 
-### Inspeção do ledger
+Por padrão, o banco fica em `../.workflow/workflow.sqlite`. Para usar outro
+arquivo, defina `DATABASE_URL` ou `WORKFLOW_DATABASE_URL`.
 
-Para descobrir chaves, ids e histórico sem recorrer ao banco direto:
+O diretório `.workflow/` é local e não deve ser versionado.
+
+### Veja o estado pelo terminal
+
+O executável do CLI aparece em `dist/interfaces/cli/main.js` depois do build:
 
 ```bash
-rtk node dist/interfaces/cli/main.js project list
-rtk node dist/interfaces/cli/main.js feature list --project carara
-rtk node dist/interfaces/cli/main.js repository list --project carara
-rtk node dist/interfaces/cli/main.js item record \
-  --project carara --feature <feature-key> --item <item-key>
-rtk node dist/interfaces/cli/main.js validate list \
-  --project carara --feature <feature-key> --item <item-key>
-rtk node dist/interfaces/cli/main.js validate list \
-  --project carara --feature <feature-key> --item <item-key> --purpose GREEN
+node dist/interfaces/cli/main.js project list
+node dist/interfaces/cli/main.js feature list --project <project-key>
+node dist/interfaces/cli/main.js context \
+  --project <project-key> --feature <feature-key> --item <item-key>
 ```
 
-`feature list` mostra features com suas fatias e estados; `repository list`
-mostra repositórios e os perfis de validação ativos (chave, programa, args) —
-é a referência para escolher `--repository` e `--profile` no `validate run`.
-`item record` expõe o registro detalhado da fatia (critérios, testes,
-autorização, baselines, revisões, decisões e pendências) e `validate list`
-retorna as validações registradas com os ids aceitos por `validate log`.
-No MCP, use primeiro `workflow_list_projects` e
-`workflow_list_features`; o segundo já retorna as fatias de cada feature.
-Depois, `workflow_context` e `workflow_record` recebem as chaves escolhidas.
-`workflow_list_repositories` informa os perfis de validação. As consultas
-`workflow_list_decisions` e `workflow_list_pending` completam a inspeção
-project-wide antes de registrar uma nova decisão ou pendência.
+Use `feature list` para descobrir as chaves existentes. Depois consulte uma
+fatia com `context`, informando `--feature` e `--item` explicitamente.
 
-### Decisões e pendências
-
-Divergências, decisões de produto e requisitos ausentes devem permanecer
-explícitos no ledger. Use:
+### Abra o dashboard
 
 ```bash
-rtk node dist/interfaces/cli/main.js decision add \
-  --project carara --feature <feature-key> --item <item-key> \
-  --key DEC-EXECUCAO-OFFLINE --title "Execução sem provider" \
-  --content "O fluxo sintético roda sem provider externo" --pin
-rtk node dist/interfaces/cli/main.js decision list --project carara
-rtk node dist/interfaces/cli/main.js pending add \
-  --project carara --feature <feature-key> --key PEND-PERFIL-BUILD \
-  --description "Definir perfil de build" --blocking
-rtk node dist/interfaces/cli/main.js pending list --project carara
-rtk node dist/interfaces/cli/main.js pending resolve \
-  --project carara --key PEND-PERFIL-BUILD --reason "perfil registrado"
+npm run start:web
 ```
 
-Decisões duráveis (`--not-durable` desativa) e pendências não resolvidas
-aparecem no `context`; `--pin` protege o registro da retenção de histórico.
-No MCP, os equivalentes são `workflow_decision_record`,
-`workflow_pending_record` e `workflow_pending_resolve`.
+Abra [http://127.0.0.1:4117](http://127.0.0.1:4117). O servidor fica
+disponível apenas no computador local. Para trocar a porta, defina
+`WORKFLOW_WEB_PORT`.
 
-O CLI e o MCP são infraestrutura do agente. O usuário autoriza a fatia e o
-agente conduz o ciclo até o fechamento; não se deve pedir ao usuário que rode
-transições ou validações intermediárias.
+Durante o desenvolvimento, use `npm run dev:web`.
 
-### Granularidade, exceções e replanejamento
+## Granularidade e replanejamento
 
-Toda fatia deve passar pela auditoria antes de avançar de `DRAFT` para
-`READY`:
+Uma fatia grande demais cria testes difíceis de interpretar e autorizações
+amplas demais. O comando abaixo verifica o tamanho e a coerência do plano:
 
 ```bash
-rtk node dist/interfaces/cli/main.js plan check \
+node dist/interfaces/cli/main.js plan check \
   --project <project-key> --feature <feature-key>
 ```
 
-O resultado `OK` permite a transição normal. Os resultados
-`SPLIT_RECOMMENDED` e `EXCEPTION_REQUIRED` são bloqueantes: o agente não deve
-implementar, autorizar, registrar RED ou tentar avançar a fatia por outro
-caminho. No MCP, a mesma auditoria é chamada por `workflow_plan_check`.
+Para cada fatia, a auditoria informa:
 
-Fatia de código pode declarar seu escopo técnico já no planejamento, antes do
-baseline de autorização:
+- `status`: `OK`, `SPLIT_RECOMMENDED` ou `EXCEPTION_REQUIRED`;
+- `repositoryScope`: se o escopo técnico foi declarado;
+- `semanticStatus`: se casos de uso, critérios e testes combinam entre si.
 
-```bash
-rtk node dist/interfaces/cli/main.js item define \
-  --project <project-key> --feature <feature-key> --key <item-key> \
-  --phase G3 --position <number> --title "<título>" \
-  --scope '{"repositories":[{"repositoryKey":"workflow","paths":["src/application/**","src/interfaces/**"]}]}' \
-  --use-cases '<json>' --criteria '<json>' --tests '<json>'
+`SPLIT_RECOMMENDED` indica que dividir é o caminho esperado. `EXCEPTION_REQUIRED`
+exige uma aprovação humana antes de seguir. Um problema semântico deve ser
+corrigido ou replanejado; não deve ser escondido como exceção de tamanho.
+
+### Granularidade, exceções e replanejamento
+
+No MCP, os equivalentes são `workflow_plan_check`,
+`workflow_request_slice_size_exception` e `workflow_replan_item`.
+
+O agente não aprova a própria exceção. A fatia original permanece em `DRAFT`,
+impedida de avançar até ser dividida ou até que um operador humano registre a
+aprovação. A aprovação usa um ator no formato
+`human:<identidade>`.
+
+## Interfaces
+
+| Interface | Para quem | Como iniciar |
+| --- | --- | --- |
+| CLI | scripts e uso no terminal | `node dist/interfaces/cli/main.js --help` |
+| MCP | agentes que precisam consultar ou atualizar o ledger | `npm run start:mcp` |
+| Dashboard | pessoas que preferem acompanhar o fluxo visualmente | `npm run start:web` |
+
+### Servidor MCP
+
+O servidor usa STDIO. Um cliente MCP pode apontar para o binário compilado:
+
+```json
+{
+  "mcpServers": {
+    "workflow": {
+      "command": "node",
+      "args": ["/caminho/para/workflow/dist/interfaces/mcp/main.js"]
+    }
+  }
+}
 ```
 
-O `plan check` expõe esse escopo como `repositoryScope: DECLARED` e preserva
-os padrões de caminho no registro e no contexto. Quando a fatia possui escopo
-declarado, a autorização precisa usar exatamente os mesmos repositórios; uma
-diferença é rejeitada antes da captura do baseline. Caminhos são relativos ao
-repositório e não podem escapar dele com caminhos absolutos ou `..`.
+As ferramentas de catálogo são somente leitura. Elas permitem descobrir
+projetos, features, repositórios, decisões e pendências antes de consultar ou
+alterar uma fatia.
 
-Além do tamanho, cada item traz `semanticStatus` e `semanticIssues`. O status
-`OK` indica resultado primário, critérios e testes coerentes. `BLOCKED` exige
-corrigir ou replanejar a fatia antes de continuar; `REVIEW_REQUIRED` exige que
-o agente leia o diagnóstico antes de decidir. Esses problemas não devem ser
-contornados com aprovação de exceção de tamanho.
+## Segurança e limites
 
-Quando a fatia estiver grande, o agente deve solicitar a decisão e parar:
+- o ledger não edita arquivos dos repositórios;
+- o MCP não executa shell arbitrário;
+- validações usam perfis registrados, com programa, argumentos, tempo e limite
+  de saída definidos;
+- uma autorização captura o estado inicial dos repositórios e rejeita uma
+  worktree suja;
+- depois do GREEN, qualquer mudança exige uma nova validação GREEN;
+- o dashboard aceita conexões apenas de `127.0.0.1` por padrão.
 
-```bash
-rtk node dist/interfaces/cli/main.js item request-size-exception \
-  --project <project-key> --feature <feature-key> --item <item-key> \
-  --actor agent:<agent-id> --reason "<diagnóstico>"
-```
+O ledger não substitui Git, um sistema de CI ou uma ferramenta de gestão de
+produto. Ele registra a sequência e as evidências que conectam essas etapas.
 
-No MCP, use `workflow_request_slice_size_exception`. Essa ferramenta registra
-uma pendência bloqueante; ela não cria aprovação e não libera `READY`. O
-agente não aprova a própria exceção e não usa `decision add` para simular uma
-aprovação.
+## Importação
 
-O caminho preferencial é replanejar. Uma fatia pode ser replanejada quando o
-tamanho está fora da política ou quando a auditoria semântica retorna
-`semanticStatus: BLOCKED`. No segundo caso, não é necessário abrir exceção de
-tamanho: o ledger registra um evento `SLICE_SEMANTIC_REPLANNED`; no primeiro,
-registra `SLICE_SIZE_REPLANNED`. Em ambos, primeiro bloqueie a fatia original:
+Snapshots estruturados servem apenas para bootstrap ou migração explícita:
 
 ```bash
-rtk node dist/interfaces/cli/main.js item replan \
-  --project <project-key> --feature <feature-key> --item <item-key> \
-  --actor agent:<agent-id> --reason "<resultado primário que será separado>"
+node dist/interfaces/cli/main.js import --file /caminho/snapshot.json
 ```
 
-Depois crie cada nova fatia com `--parent <item-key>`. No MCP, informe
-`parentItemKey` em `workflow_define_item`; o bloqueio é registrado por
-`workflow_replan_item`. A fatia original permanece
-`BLOCKED`; cada descendente precisa ser pequeno, independente e passar por
-`plan check` novamente. A linhagem aparece em `feature list`, `context`,
-`item record` e `plan check`.
-
-Se a divisão não for possível, somente o operador humano pode aprovar a
-exceção pela CLI, depois que houver uma solicitação registrada:
-
-```bash
-rtk node dist/interfaces/cli/main.js item approve-size \
-  --project <project-key> --feature <feature-key> --item <item-key> \
-  --actor human:<identidade> --reason "<justificativa durável>"
-```
-
-`approve-size` é uma operação `OPERATOR-ONLY` e não é exposta como ferramenta
-MCP para agentes. A transição só reconhece uma aprovação acompanhada do evento
-específico de aprovação humana; uma decisão genérica com a mesma chave não
-libera a fatia.
-
-### Ciclo de uma fatia de código
-
-1. consultar o contexto e confirmar a autorização;
-2. escrever os testes e avançar para `TESTS_DEFINED`;
-3. executar `validate run --purpose RED`; um RED comportamental avança para
-   `RED_CONFIRMED` automaticamente, enquanto um RED estrutural exige uma
-   justificativa; se ela não foi informada, use `validate confirm-red` com o id
-   retornado, sem repetir a execução;
-4. avançar para `IMPLEMENTING`, implementar e executar `--purpose GREEN` em
-   cada repositório autorizado; o primeiro resultado parcial permanece em
-   `IMPLEMENTING` e informa os repositórios pendentes, enquanto o conjunto
-   completo avança automaticamente para `GREEN_CONFIRMED`;
-5. manter a worktree congelada depois do GREEN; se ela mudar, use
-   `item invalidate-green` e execute um novo GREEN;
-6. avançar para `READY_FOR_REVIEW` e registrar a revisão como `SELF` ou
-   `INDEPENDENT`; o veredito já move o item para `APPROVED`,
-   `CHANGES_REQUIRED` ou `BLOCKED`;
-7. se o veredito exigir mudanças, retorne para `TESTS_DEFINED` antes de
-   executar o RED novamente; após a aprovação, faça o commit e feche o item
-   com o SHA.
-
-`RED` prova que os testes detectam a ausência do comportamento. `GREEN` prova
-que o mesmo delta passou após a implementação. `CHECK` representa uma
-verificação adicional: quando usa o mesmo perfil e a mesma worktree do GREEN,
-o ledger reaproveita a evidência sem executar a suíte novamente. Uma mudança
-na worktree invalida o reaproveitamento.
-
-Falhas conhecidas de descoberta estrutural do Jest, como `No tests found`, são
-registradas como `TEST_FAILURE` com evidência `STRUCTURAL`. Elas não avançam a
-fatia automaticamente: o agente deve ler o log e usar `confirm-red` com uma
-justificativa, sem executar o perfil novamente. Falhas de inicialização do
-processo continuam classificadas como infraestrutura.
-
-`validate run` inclui um trecho limitado do log para falhas. O log completo
-pode ser lido sem nova execução com:
-
-```bash
-rtk node dist/interfaces/cli/main.js validate log \
-  --project carara --feature <feature-key> --item <item-key> \
-  --validation <id> --raw
-```
-
-O mesmo recurso está disponível no MCP como `workflow_validation_log`.
-`workflow_confirm_structural_red` confirma um RED estrutural já registrado e
-`workflow_invalidate_green` retorna uma evidência GREEN obsoleta para
-`IMPLEMENTING`.
-
-As evidências usam um fingerprint de execução (HEAD, diff e arquivos novos) e
-um fingerprint do conteúdo efetivo da worktree, que permanece estável quando o
-mesmo conteúdo é commitado. O contexto curto mostra o resultado corrente,
-validações, modo de revisão e commit, além das duas fatias anteriores.
-
-O comando `import` recebe somente um JSON com `schemaVersion: 1` e `importKey`.
-A mesma chave é aplicada uma única vez, permitindo reexecução segura. Essa
-operação serve apenas para bootstrap ou migração explícita de um snapshot
-estruturado; não é usada para consultar o estado corrente nem para substituir
-as transições normais do ledger.
-
-## Regras de segurança
-
-- Git é consultado somente por `rtk git`; autorização rejeita worktrees sujas.
-- Validações usam apenas programas allowlistados (`npm`, `npx`, `node`, `pnpm`,
-  `yarn`), sempre sem shell, dentro do repositório registrado.
-- O executor limita tempo e saída. O resumo não contém log cru; o log, quando
-  necessário, fica comprimido no banco por sete dias.
-- O estado corrente deve ser lido com `context`; autorização, validação,
-  revisão e fechamento devem ser registrados pelas operações do ledger.
-- O MCP não aceita shell arbitrário, não altera arquivos, não faz stage/commit
-  e não chama providers ou serviços externos.
-- Contexto curto preserva a fatia ativa, decisões duráveis, pendências,
-  critérios e apenas as duas fatias fechadas anteriores; histórico antigo vira
-  resumo.
-
-## MCP local
-
-O servidor STDIO é iniciado por `rtk npm run start:mcp` a partir deste
-diretório. A configuração de projeto em `../.codex/config.toml` registra o
-servidor `workflow` com aprovação para operações de escrita.
-
-As ferramentas principais são `workflow_list_projects`,
-`workflow_list_features`, `workflow_list_repositories`,
-`workflow_list_decisions`, `workflow_list_pending`, `workflow_context`,
-`workflow_record`, `workflow_list_validations`, `workflow_define_item`,
-`workflow_authorize`, `workflow_validate`, `workflow_validation_log`,
-`workflow_confirm_structural_red`, `workflow_transition`,
-`workflow_reopen`, `workflow_invalidate_green`, `workflow_review`,
-`workflow_decision_record`, `workflow_pending_record`,
-`workflow_pending_resolve` e `workflow_compact_history`.
-
-As cinco ferramentas `workflow_list_*` iniciais são somente leitura e existem
-para que o agente descubra as chaves válidas e o estado global sem acessar o
-SQLite diretamente. O agente deve preferir essa sequência de catálogo antes
-de chamar uma ferramenta que exige `featureKey` ou `itemKey`.
-
-## Dashboard web local
-
-O dashboard operacional usa o mesmo SQLite do CLI/MCP e fica disponível apenas
-no loopback:
-
-```bash
-rtk npm run build
-rtk npm run start:web
-```
-
-Abra `http://127.0.0.1:4117`. Durante o desenvolvimento, use
-`rtk npm run dev:web`; a página é atualizada a cada cinco segundos para refletir
-ações feitas por agentes. A interface calcula as ações elegíveis no servidor,
-revalida o estado antes de cada mutação e permite abrir logs de validação apenas
-enquanto ainda estiverem dentro da retenção de sete dias.
-
-Itens criados pelo CLI/MCP continuam sendo a fonte para definição de projetos,
-features, testes e perfis. O dashboard conduz autorização, transições,
-validações, reviews, bloqueios, reaberturas e compactação quando os pré-
-requisitos do ledger estiverem satisfeitos.
+O arquivo precisa seguir o schema `1` e conter um `importKey`. A importação é
+idempotente e não substitui as transições normais do ledger.
 
 ## Desenvolvimento
 
 ```bash
-rtk npm test
-rtk npm run lint
-rtk npm run build
+npm test
+npm run test:web
+npm run lint
+npm run build
 ```
 
-Testes são executados em bancos SQLite temporários e removidos ao final de cada
-suíte.
+Os testes usam bancos SQLite temporários e os removem ao final de cada suíte.
+
+## Documentação
+
+- [AGENTS.md](AGENTS.md): instruções operacionais para agentes;
+- [docs/ESTUDO-PROJETOS-SIMILARES.md](docs/ESTUDO-PROJETOS-SIMILARES.md):
+  estudo de projetos relacionados a coordenação, leases, dependências e
+  execução durável.
