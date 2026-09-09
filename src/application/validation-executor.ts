@@ -209,13 +209,10 @@ export class ValidationExecutor {
       }
     }
 
-    const args = [
-      currentProfile.program,
-      ...decodeJson<string[]>(currentProfile.argsJson, []),
-    ];
+    const args = decodeJson<string[]>(currentProfile.argsJson, []);
+    const command = buildValidationCommand(currentProfile.program, args);
     const request: CommandRequest = {
-      executable: 'rtk',
-      args,
+      ...command,
       cwd: workingDirectory,
       timeoutMs: currentProfile.timeoutSeconds * 1_000,
       maxOutputBytes: currentProfile.maxOutputBytes,
@@ -356,6 +353,19 @@ export class ValidationExecutor {
 export function createCommandRunner(): CommandRunner {
   return {
     run: runCommand,
+  };
+}
+
+export function buildValidationCommand(
+  program: string,
+  args: string[],
+): Pick<CommandRequest, 'executable' | 'args'> {
+  // When a validation is itself launched through rtk, the direct node path
+  // can lose piped stdout/stderr. `proxy` keeps the profile output available
+  // to the parser without changing the registered command or its allowlist.
+  return {
+    executable: 'rtk',
+    args: program === 'node' ? ['proxy', program, ...args] : [program, ...args],
   };
 }
 

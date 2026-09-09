@@ -6,6 +6,7 @@ import type { CommandRequest, CommandRunner, GitReadPort } from './types.js';
 import {
   classifyCommandResult,
   classifyRedEvidence,
+  buildValidationCommand,
   createCommandRunner,
   ValidationExecutor,
 } from './validation-executor.js';
@@ -105,6 +106,27 @@ describe('validation executor', () => {
       maxOutputBytes: 1_024,
     });
     expect(timeout.timedOut).toBe(true);
+  });
+
+  it('uses rtk proxy for node profiles so piped output remains available', async () => {
+    const command = buildValidationCommand('node', [
+      '-e',
+      'process.stdout.write("Tests: 0 total\\n"); process.exit(1)',
+    ]);
+
+    const output = await createCommandRunner().run({
+      ...command,
+      cwd: process.cwd(),
+      timeoutMs: 1_000,
+      maxOutputBytes: 1_024,
+    });
+
+    expect(output).toMatchObject({
+      exitCode: 1,
+      stdout: 'Tests: 0 total\n',
+      stderr: '',
+      timedOut: false,
+    });
   });
 
   describe('run', () => {
