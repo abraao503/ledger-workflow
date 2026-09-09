@@ -107,6 +107,80 @@ etapa, exceto `CLOSED`, pode ser bloqueada. `reopen` devolve a fatia ao estado
 anterior ao bloqueio; `replan` bloqueia a fatia original e cria espaço para
 entregas descendentes.
 
+### Paralelismo e dependências
+
+Fatia autorizada não precisa formar uma fila global. Dependências explícitas
+formam um grafo acíclico entre fatias do mesmo projeto, inclusive entre
+features. Uma fatia só pode ser reivindicada quando todas as dependências
+estão `CLOSED`; fatias sem relação podem ser reivindicadas por agentes em
+paralelo.
+
+Ao definir uma fatia, use `--depends-on <feature>:<item>` quantas vezes for
+necessário. Dependências também podem ser gerenciadas depois, enquanto a
+fatia ainda está em `DRAFT` ou `READY`:
+
+```bash
+node dist/interfaces/cli/main.js item dependency add \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --depends-on <other-feature>:<other-item>
+node dist/interfaces/cli/main.js item dependency list \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+O ledger rejeita referências inexistentes, duplicadas e ciclos.
+
+### Worktrees gerenciadas
+
+A autorização continua usando o checkout compartilhado por padrão. Para
+executar uma fatia em isolamento, declare no `item define` o escopo de
+repositórios e caminhos relativos e autorize o modo `MANAGED_WORKTREE`:
+
+```bash
+node dist/interfaces/cli/main.js item authorize \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --instruction "Implementar o escopo autorizado" --actor human:operator \
+  --repositories api,front --execution-mode MANAGED_WORKTREE
+node dist/interfaces/cli/main.js item claim \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --holder agent:codex
+```
+
+No `claim`, o ledger valida o baseline exato e cria uma worktree e uma branch
+por repositório declarado. As validações do agente usam essas worktrees. Dois
+claims gerenciados com paths sobrepostos são bloqueados; paths distintos podem
+prosseguir em paralelo. Uma reserva expirada preserva a worktree antiga como
+`ABANDONED`; `item recover` cria uma nova a partir do baseline atual autorizado.
+Os arquivos efetivamente alterados pelo candidato também são comparados com os
+padrões declarados antes da integração; qualquer arquivo fora do escopo bloqueia
+o candidato. As worktrees ficam sob `<project.rootPath>/.workflow/worktrees`.
+
+O fechamento gerenciado é um passo controlado. Depois de GREEN e da revisão,
+o agente prepara a integração (rebase e candidatos), um humano autoriza os
+SHAs e bases exatos, e só então o ledger faz `--ff-only`, fecha a fatia e tenta
+limpar worktrees e branches sem força:
+
+```bash
+node dist/interfaces/cli/main.js item prepare-integration \
+  --project <project-key> --feature <feature-key> --item <item-key>
+node dist/interfaces/cli/main.js item authorize-integration \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --actor human:operator --candidates '{"api":"<candidate-sha>"}' \
+  --target-bases '{"api":"<target-sha>"}'
+node dist/interfaces/cli/main.js item integrate \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+Se a limpeza falhar, o ledger mantém o registro como `CLEANUP_FAILED` para
+uma tentativa posterior com `item cleanup-worktrees`. O checkout compartilhado
+e o fechamento direto continuam disponíveis para autorizações `SHARED`. Se uma
+fatia gerenciada for bloqueada, a reserva é liberada e a worktree fica
+`ABANDONED` para limpeza posterior, sem ser reutilizada automaticamente.
+O ledger serializa claims e alterações do grafo por projeto. Durante a
+integração, a aprovação passa por `IN_PROGRESS`; se o processo for interrompido,
+uma nova chamada reconcilia uma integração já concluída ou exige uma nova
+preparação/autorização. Um rebase que alterar o conteúdo validado invalida o
+GREEN e exige validação e revisão novamente.
+
 <details>
 <summary>Estados registrados pelo ledger</summary>
 
@@ -251,12 +325,17 @@ alterar uma fatia.
 
 ## Segurança e limites
 
-- o ledger não edita arquivos dos repositórios;
+- o ledger não edita arquivos-fonte dos repositórios; no modo gerenciado ele
+  apenas cria, rebasa, integra e limpa worktrees com operações Git limitadas;
 - o MCP não executa shell arbitrário;
 - validações usam perfis registrados, com programa, argumentos, tempo e limite
   de saída definidos;
 - uma autorização captura o estado inicial dos repositórios e rejeita uma
   worktree suja;
+- worktrees gerenciadas só são criadas para repositórios e paths declarados;
+- a integração exige aprovação humana vinculada aos SHAs candidatos e só faz
+  fast-forward em um checkout alvo limpo;
+- limpeza nunca usa remoção forçada e falhas ficam visíveis no ledger;
 - depois do GREEN, qualquer mudança exige uma nova validação GREEN;
 - o dashboard aceita conexões apenas de `127.0.0.1` por padrão.
 

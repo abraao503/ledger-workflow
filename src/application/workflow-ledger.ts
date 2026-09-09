@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import path from 'node:path';
 
+import { Prisma } from '@prisma/client';
 import type {
   Feature,
   PrismaClient,
@@ -64,6 +65,13 @@ import type {
   SubmitReviewInput,
   TransitionWorkItemInput,
   GitReadPort,
+  GitWorkspacePort,
+  AddWorkItemDependencyInput,
+  RemoveWorkItemDependencyInput,
+  PrepareIntegrationInput,
+  AuthorizeIntegrationInput,
+  IntegrateWorkItemInput,
+  CleanupWorkItemInput,
 } from './types.js';
 
 const LOG_RETENTION_DAYS = 7;
@@ -71,6 +79,8 @@ const LOG_RETENTION_DAYS = 7;
 type WorkItemWithFeature = WorkItem & {
   feature: Feature;
 };
+
+type LedgerExecutor = PrismaClient | Prisma.TransactionClient;
 
 type GreenEvidenceContext = {
   greenEvidence: boolean;
@@ -91,6 +101,38 @@ export class WorkflowLedger {
     private readonly db: PrismaClient,
     private readonly git: GitReadPort = new GitReadAdapter(),
   ) {}
+
+  private workspaceGit(): GitWorkspacePort {
+    const candidate = this.git as Partial<GitWorkspacePort>;
+    if (
+      !candidate.createWorktree ||
+      !candidate.removeWorktree ||
+      !candidate.deleteBranch ||
+      !candidate.rebaseWorktree ||
+      !candidate.getHead ||
+      !candidate.diffFiles ||
+      !candidate.fastForward
+    ) {
+      fail('WORKTREE_GIT_UNAVAILABLE');
+    }
+
+    return this.git as GitWorkspacePort;
+  }
+
+  private async lockProjectForWrite(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+  ): Promise<void> {
+    // SQLite has no advisory locks. A no-op update takes the project row's
+    // write lock for the duration of the transaction, serializing claims and
+    // dependency-graph mutations for the same project without changing data.
+    const affectedRows = await transaction.$executeRaw(
+      Prisma.sql`UPDATE "Project" SET "id" = "id" WHERE "id" = ${projectId}`,
+    );
+    if (affectedRows !== 1) {
+      fail('PROJECT_NOT_FOUND');
+    }
+  }
 
   async createProject(input: CreateProjectInput) {
     if (!input.rootPath.trim()) {
@@ -285,6 +327,63 @@ export class WorkflowLedger {
         },
       });
 
+      const dependencyRefs = input.dependsOn ?? [];
+      const dependencyKeys = new Set<string>();
+      const existingDependencies = await transaction.workItemDependency.findMany({
+        select: { workItemId: true, dependsOnItemId: true },
+      });
+      const dependencyEdges = existingDependencies.map((dependency) => ({
+        from: dependency.workItemId,
+        to: dependency.dependsOnItemId,
+      }));
+
+      for (const dependencyRef of dependencyRefs) {
+        const dependencyKey = `${dependencyRef.featureKey}:${dependencyRef.itemKey}`;
+        if (dependencyKeys.has(dependencyKey)) {
+          fail('DUPLICATE_WORK_ITEM_DEPENDENCY');
+        }
+        dependencyKeys.add(dependencyKey);
+
+        const dependencyFeature = await transaction.feature.findFirst({
+          where: { projectId: feature.projectId, key: dependencyRef.featureKey },
+        });
+        if (!dependencyFeature) {
+          fail('DEPENDENCY_FEATURE_NOT_FOUND');
+        }
+
+        const dependencyItem = await transaction.workItem.findFirst({
+          where: {
+            featureId: (dependencyFeature as NonNullable<typeof dependencyFeature>).id,
+            key: dependencyRef.itemKey,
+          },
+        });
+        if (!dependencyItem) {
+          fail('DEPENDENCY_ITEM_NOT_FOUND');
+        }
+        if ((dependencyItem as NonNullable<typeof dependencyItem>).id === item.id) {
+          fail('WORK_ITEM_DEPENDENCY_CYCLE');
+        }
+
+        if (hasDependencyPath(
+          dependencyEdges,
+          (dependencyItem as NonNullable<typeof dependencyItem>).id,
+          item.id,
+        )) {
+          fail('WORK_ITEM_DEPENDENCY_CYCLE');
+        }
+
+        await transaction.workItemDependency.create({
+          data: {
+            workItemId: item.id,
+            dependsOnItemId: (dependencyItem as NonNullable<typeof dependencyItem>).id,
+          },
+        });
+        dependencyEdges.push({
+          from: item.id,
+          to: (dependencyItem as NonNullable<typeof dependencyItem>).id,
+        });
+      }
+
       const useCasesByKey = new Map<string, string>();
 
       for (const useCase of input.useCases) {
@@ -347,6 +446,7 @@ export class WorkflowLedger {
             key: item.key,
             requirementsComplete,
             testCount: input.tests.length,
+            dependsOn: dependencyRefs.map((dependency) => `${dependency.featureKey}:${dependency.itemKey}`),
           }),
         },
       });
@@ -357,6 +457,11 @@ export class WorkflowLedger {
 
   async authorizeWorkItem(input: AuthorizeWorkItemInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+
+    const executionMode = input.executionMode ?? 'SHARED';
+    if (executionMode !== 'SHARED' && executionMode !== 'MANAGED_WORKTREE') {
+      fail('EXECUTION_MODE_INVALID');
+    }
 
     if (item.state !== 'READY') {
       fail('ITEM_NOT_READY');
@@ -386,6 +491,20 @@ export class WorkflowLedger {
     }
 
     const declaredScope = decodeWorkItemScope(item.scopeJson);
+    if (executionMode === 'MANAGED_WORKTREE' && !declaredScope) {
+      fail('WORKTREE_SCOPE_REQUIRED');
+    }
+    if (executionMode === 'MANAGED_WORKTREE' && repositories.some((repository) => !repository.expectedBranch)) {
+      fail(
+        'WORKTREE_TARGET_BRANCH_REQUIRED',
+        'A execução gerenciada exige uma branch de destino explícita em cada repositório.',
+        {
+          repositories: repositories
+            .filter((repository) => !repository.expectedBranch)
+            .map((repository) => repository.key),
+        },
+      );
+    }
     if (declaredScope) {
       const declaredRepositoryKeys = declaredScope.repositories
         .map((repository) => repository.repositoryKey)
@@ -419,11 +538,13 @@ export class WorkflowLedger {
     });
 
     return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
       const authorization = await transaction.authorization.create({
         data: {
           workItemId: item.id,
           instruction: input.instruction,
           actor: input.actor,
+          executionMode,
           allowedEffectsJson: encodeJson(input.allowedEffects),
           forbiddenEffectsJson: encodeJson(input.forbiddenEffects),
         },
@@ -442,10 +563,18 @@ export class WorkflowLedger {
         });
       }
 
-      const updated = await transaction.workItem.update({
-        where: { id: item.id },
+      const updateResult = await transaction.workItem.updateMany({
+        where: { id: item.id, state: 'READY' },
         data: { state: 'AUTHORIZED', currentSha: baselines[0]?.snapshot.sha },
       });
+      if (updateResult.count !== 1) {
+        fail('ITEM_NOT_READY');
+      }
+      const updated = await transaction.workItem.findUnique({ where: { id: item.id } });
+      if (!updated) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      const currentUpdated = updated as NonNullable<typeof updated>;
 
       await transaction.workflowEvent.create({
         data: {
@@ -456,12 +585,173 @@ export class WorkflowLedger {
           payloadJson: encodeJson({
             actor: input.actor,
             repositoryCount: baselines.length,
+            executionMode,
           }),
         },
       });
 
-      return { authorization, item: updated };
+      return { authorization, item: currentUpdated };
     });
+  }
+
+  async addWorkItemDependency(input: AddWorkItemDependencyInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const dependency = await this.requireItem(
+      input.projectKey,
+      input.dependsOn.featureKey,
+      input.dependsOn.itemKey,
+    );
+
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentItemResult = await transaction.workItem.findUnique({
+        where: { id: item.id },
+        include: { feature: true },
+      });
+      const currentDependencyResult = await transaction.workItem.findUnique({
+        where: { id: dependency.id },
+      });
+      if (!currentItemResult || !currentDependencyResult) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
+      const currentDependency = currentDependencyResult as NonNullable<typeof currentDependencyResult>;
+      if (!['DRAFT', 'READY'].includes(currentItem.state)) {
+        fail('DEPENDENCY_ITEM_IMMUTABLE');
+      }
+      if (currentItem.id === currentDependency.id) {
+        fail('WORK_ITEM_DEPENDENCY_CYCLE');
+      }
+
+      const existing = await transaction.workItemDependency.findUnique({
+        where: {
+          workItemId_dependsOnItemId: {
+            workItemId: currentItem.id,
+            dependsOnItemId: currentDependency.id,
+          },
+        },
+      });
+      if (existing) {
+        fail('WORK_ITEM_DEPENDENCY_EXISTS');
+      }
+
+      const edges = await transaction.workItemDependency.findMany({
+        select: { workItemId: true, dependsOnItemId: true },
+      });
+      if (hasDependencyPath(
+        edges.map((edge) => ({ from: edge.workItemId, to: edge.dependsOnItemId })),
+        currentDependency.id,
+        currentItem.id,
+      )) {
+        fail('WORK_ITEM_DEPENDENCY_CYCLE');
+      }
+
+      const created = await transaction.workItemDependency.create({
+        data: {
+          workItemId: currentItem.id,
+          dependsOnItemId: currentDependency.id,
+        },
+        include: {
+          dependsOnItem: { include: { feature: true } },
+        },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: currentItem.featureId,
+          workItemId: currentItem.id,
+          type: 'ITEM_DEPENDENCY_ADDED',
+          payloadJson: encodeJson({
+            dependsOn: `${input.dependsOn.featureKey}:${input.dependsOn.itemKey}`,
+          }),
+        },
+      });
+      return created;
+    });
+  }
+
+  async removeWorkItemDependency(input: RemoveWorkItemDependencyInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const dependency = await this.requireItem(
+      input.projectKey,
+      input.dependsOn.featureKey,
+      input.dependsOn.itemKey,
+    );
+
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentItemResult = await transaction.workItem.findUnique({
+        where: { id: item.id },
+        include: { feature: true },
+      });
+      const currentDependencyResult = await transaction.workItem.findUnique({
+        where: { id: dependency.id },
+      });
+      if (!currentItemResult || !currentDependencyResult) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
+      const currentDependency = currentDependencyResult as NonNullable<typeof currentDependencyResult>;
+      if (!['DRAFT', 'READY'].includes(currentItem.state)) {
+        fail('DEPENDENCY_ITEM_IMMUTABLE');
+      }
+      const existing = await transaction.workItemDependency.findUnique({
+        where: {
+          workItemId_dependsOnItemId: {
+            workItemId: currentItem.id,
+            dependsOnItemId: currentDependency.id,
+          },
+        },
+      });
+      if (!existing) {
+        fail('WORK_ITEM_DEPENDENCY_NOT_FOUND');
+      }
+      const currentExisting = existing as NonNullable<typeof existing>;
+
+      const removed = await transaction.workItemDependency.delete({ where: { id: currentExisting.id } });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: currentItem.featureId,
+          workItemId: currentItem.id,
+          type: 'ITEM_DEPENDENCY_REMOVED',
+          payloadJson: encodeJson({
+            dependsOn: `${input.dependsOn.featureKey}:${input.dependsOn.itemKey}`,
+          }),
+        },
+      });
+      return removed;
+    });
+  }
+
+  async listWorkItemDependencies(input: RecordRequest) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const [dependencies, dependents] = await Promise.all([
+      this.db.workItemDependency.findMany({
+        where: { workItemId: item.id },
+        include: { dependsOnItem: { include: { feature: true } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.db.workItemDependency.findMany({
+        where: { dependsOnItemId: item.id },
+        include: { workItem: { include: { feature: true } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    return {
+      dependencies: dependencies.map((entry) => ({
+        featureKey: entry.dependsOnItem.feature.key,
+        itemKey: entry.dependsOnItem.key,
+        title: entry.dependsOnItem.title,
+        state: entry.dependsOnItem.state,
+      })),
+      dependents: dependents.map((entry) => ({
+        featureKey: entry.workItem.feature.key,
+        itemKey: entry.workItem.key,
+        title: entry.workItem.title,
+        state: entry.workItem.state,
+      })),
+    };
   }
 
   async claimWorkItem(input: ClaimWorkItemInput) {
@@ -476,17 +766,44 @@ export class WorkflowLedger {
     }
 
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
-    if (item.state !== 'AUTHORIZED') {
-      fail('SLICE_CLAIM_STATE_INVALID');
-    }
 
     const acquiredAt = new Date();
     const expiresAt = new Date(acquiredAt.getTime() + durationSeconds * 1_000);
 
-    return this.db.$transaction(async (transaction) => {
+    const claimed = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentItemResult = await transaction.workItem.findUnique({
+        where: { id: item.id },
+        include: { feature: true },
+      });
+      if (!currentItemResult || currentItemResult.state !== 'AUTHORIZED') {
+        fail('SLICE_CLAIM_STATE_INVALID');
+      }
+      const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
+
+      await this.assertDependenciesClosed(currentItem.id, transaction);
+      const authorization = await transaction.authorization.findFirst({
+        where: { workItemId: currentItem.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      const executionMode = authorization?.executionMode ?? 'SHARED';
+      const scope = decodeWorkItemScope(currentItem.scopeJson);
+      if (executionMode === 'MANAGED_WORKTREE') {
+        if (!scope) {
+          fail('WORKTREE_SCOPE_REQUIRED');
+        }
+        await this.assertScopeAvailable(
+          currentItem.id,
+          currentItem.feature.projectId,
+          scope as NonNullable<typeof scope>,
+          acquiredAt,
+          transaction,
+        );
+      }
+
       const activeLease = await transaction.workItemLease.findFirst({
         where: {
-          workItemId: item.id,
+          workItemId: currentItem.id,
           releasedAt: null,
         },
         orderBy: { acquiredAt: 'desc' },
@@ -504,7 +821,7 @@ export class WorkflowLedger {
       try {
         lease = await transaction.workItemLease.create({
           data: {
-            workItemId: item.id,
+            workItemId: currentItem.id,
             holder,
             acquiredAt,
             expiresAt,
@@ -521,8 +838,8 @@ export class WorkflowLedger {
       await transaction.workflowEvent.create({
         data: {
           projectId: item.feature.projectId,
-          featureId: item.featureId,
-          workItemId: item.id,
+          featureId: currentItem.featureId,
+          workItemId: currentItem.id,
           type: 'SLICE_LEASE_ACQUIRED',
           payloadJson: encodeJson({
             holder,
@@ -533,8 +850,43 @@ export class WorkflowLedger {
         },
       });
 
-      return { lease, item };
+      return { lease, item: currentItem, executionMode, scope };
     });
+
+    if (claimed.executionMode !== 'MANAGED_WORKTREE') {
+      return claimed;
+    }
+
+    try {
+      const workspaces = await this.provisionManagedWorkspaces(
+        input.projectKey,
+        input.featureKey,
+        input.itemKey,
+        claimed.lease.id,
+        claimed.scope as NonNullable<typeof claimed.scope>,
+      );
+      return { ...claimed, workspaces };
+    } catch (error) {
+      await this.db.$transaction(async (transaction) => {
+        await transaction.workItemLease.update({
+          where: { id: claimed.lease.id },
+          data: { releasedAt: new Date() },
+        });
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: item.feature.projectId,
+            featureId: claimed.item.featureId,
+            workItemId: claimed.item.id,
+            type: 'SLICE_WORKTREE_PROVISION_FAILED',
+            payloadJson: encodeJson({
+              leaseId: claimed.lease.id,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          },
+        });
+      });
+      throw error;
+    }
   }
 
   async recoverWorkItemLease(input: RecoverWorkItemLeaseInput) {
@@ -549,17 +901,44 @@ export class WorkflowLedger {
     }
 
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
-    if (item.state !== 'AUTHORIZED') {
-      fail('SLICE_CLAIM_STATE_INVALID');
-    }
 
     const acquiredAt = new Date();
     const expiresAt = new Date(acquiredAt.getTime() + durationSeconds * 1_000);
 
-    return this.db.$transaction(async (transaction) => {
+    const recovered = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentItemResult = await transaction.workItem.findUnique({
+        where: { id: item.id },
+        include: { feature: true },
+      });
+      if (!currentItemResult || ['CLOSED', 'BLOCKED'].includes(currentItemResult.state)) {
+        fail('SLICE_CLAIM_STATE_INVALID');
+      }
+      const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
+
+      await this.assertDependenciesClosed(currentItem.id, transaction);
+      const authorization = await transaction.authorization.findFirst({
+        where: { workItemId: currentItem.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      const executionMode = authorization?.executionMode ?? 'SHARED';
+      const scope = decodeWorkItemScope(currentItem.scopeJson);
+      if (executionMode === 'MANAGED_WORKTREE' && !scope) {
+        fail('WORKTREE_SCOPE_REQUIRED');
+      }
+      if (executionMode === 'MANAGED_WORKTREE') {
+        await this.assertScopeAvailable(
+          currentItem.id,
+          currentItem.feature.projectId,
+          scope as NonNullable<typeof scope>,
+          acquiredAt,
+          transaction,
+        );
+      }
+
       const activeLease = await transaction.workItemLease.findFirst({
         where: {
-          workItemId: item.id,
+          workItemId: currentItem.id,
           releasedAt: null,
         },
         orderBy: { acquiredAt: 'desc' },
@@ -577,9 +956,13 @@ export class WorkflowLedger {
         where: { id: (activeLease as NonNullable<typeof activeLease>).id },
         data: { releasedAt: acquiredAt },
       });
+      await transaction.workItemWorkspace.updateMany({
+        where: { leaseId: previousLease.id, status: { in: ['ACTIVE', 'PROVISIONING'] } },
+        data: { status: 'ABANDONED' },
+      });
       const lease = await transaction.workItemLease.create({
         data: {
-          workItemId: item.id,
+          workItemId: currentItem.id,
           holder,
           acquiredAt,
           expiresAt,
@@ -589,9 +972,9 @@ export class WorkflowLedger {
 
       await transaction.workflowEvent.create({
         data: {
-          projectId: item.feature.projectId,
-          featureId: item.featureId,
-          workItemId: item.id,
+          projectId: currentItem.feature.projectId,
+          featureId: currentItem.featureId,
+          workItemId: currentItem.id,
           type: 'SLICE_LEASE_RECOVERED',
           payloadJson: encodeJson({
             previousLeaseId: previousLease.id,
@@ -604,7 +987,995 @@ export class WorkflowLedger {
         },
       });
 
-      return { lease, previousLease, item };
+      return { lease, previousLease, item: currentItem, executionMode, scope };
+    });
+
+    if (recovered.executionMode !== 'MANAGED_WORKTREE') {
+      return recovered;
+    }
+
+    try {
+      const workspaces = await this.provisionManagedWorkspaces(
+        input.projectKey,
+        input.featureKey,
+        input.itemKey,
+        recovered.lease.id,
+        recovered.scope as NonNullable<typeof recovered.scope>,
+      );
+      return { ...recovered, workspaces };
+    } catch (error) {
+      await this.db.$transaction(async (transaction) => {
+        await transaction.workItemLease.update({
+          where: { id: recovered.lease.id },
+          data: { releasedAt: new Date() },
+        });
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: item.feature.projectId,
+            featureId: item.featureId,
+            workItemId: item.id,
+            type: 'SLICE_WORKTREE_PROVISION_FAILED',
+            payloadJson: encodeJson({
+              leaseId: recovered.lease.id,
+              recoveredFromId: recovered.previousLease.id,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          },
+        });
+      });
+      throw error;
+    }
+  }
+
+  private async assertDependenciesClosed(
+    itemId: string,
+    executor: LedgerExecutor = this.db,
+  ): Promise<void> {
+    const dependencies = await executor.workItemDependency.findMany({
+      where: { workItemId: itemId },
+      include: { dependsOnItem: { select: { key: true, state: true, feature: { select: { key: true } } } } },
+    });
+    const pending = dependencies.filter((dependency) => dependency.dependsOnItem.state !== 'CLOSED');
+    if (pending.length) {
+      fail(
+        'WORK_ITEM_DEPENDENCIES_PENDING',
+        'A fatia só pode ser reivindicada depois que suas dependências forem fechadas.',
+        {
+          dependencies: pending.map((dependency) => ({
+            featureKey: dependency.dependsOnItem.feature.key,
+            itemKey: dependency.dependsOnItem.key,
+            state: dependency.dependsOnItem.state,
+          })),
+        },
+      );
+    }
+  }
+
+  private async assertScopeAvailable(
+    itemId: string,
+    projectId: string,
+    scope: NonNullable<ReturnType<typeof decodeWorkItemScope>>,
+    now: Date,
+    executor: LedgerExecutor = this.db,
+  ): Promise<void> {
+    const [activeLeases, retainedWorkspaces, repositories] = await Promise.all([
+      executor.workItemLease.findMany({
+        where: {
+          releasedAt: null,
+          expiresAt: { gt: now },
+          workItemId: { not: itemId },
+          workItem: { feature: { projectId } },
+        },
+        include: {
+          workItem: { select: { id: true, key: true, scopeJson: true, feature: { select: { key: true } } } },
+        },
+      }),
+      executor.workItemWorkspace.findMany({
+        where: {
+          status: { not: 'REMOVED' },
+          workItemId: { not: itemId },
+          workItem: { feature: { projectId } },
+        },
+        include: {
+          workItem: { select: { id: true, key: true, scopeJson: true, feature: { select: { key: true } } } },
+          lease: { select: { holder: true } },
+        },
+      }),
+      executor.repository.findMany({
+        where: { projectId },
+        select: { key: true, path: true },
+      }),
+    ]);
+    const repositoryPaths = new Map(repositories.map((repository) => [repository.key, path.resolve(repository.path)]));
+    const occupied = new Map<string, {
+      holder: string;
+      featureKey: string;
+      itemKey: string;
+      scopeJson: string | null;
+      workspaceStatus?: string;
+    }>();
+    for (const lease of activeLeases) {
+      occupied.set(lease.workItem.id, {
+        holder: lease.holder,
+        featureKey: lease.workItem.feature.key,
+        itemKey: lease.workItem.key,
+        scopeJson: lease.workItem.scopeJson,
+      });
+    }
+    for (const workspace of retainedWorkspaces) {
+      if (!occupied.has(workspace.workItem.id)) {
+        occupied.set(workspace.workItem.id, {
+          holder: workspace.lease.holder,
+          featureKey: workspace.workItem.feature.key,
+          itemKey: workspace.workItem.key,
+          scopeJson: workspace.workItem.scopeJson,
+          workspaceStatus: workspace.status,
+        });
+      }
+    }
+    for (const other of occupied.values()) {
+      const otherScope = decodeWorkItemScope(other.scopeJson);
+      if (!otherScope) {
+        continue;
+      }
+      const conflicts = findScopeConflicts(scope, otherScope, repositoryPaths);
+      if (conflicts.length) {
+        fail(
+          'WORK_ITEM_SCOPE_CONFLICT',
+          'A fatia com paths sobrepostos já está reservada por outro agente.',
+          {
+            holder: other.holder,
+            featureKey: other.featureKey,
+            itemKey: other.itemKey,
+            conflicts,
+            ...(other.workspaceStatus ? { workspaceStatus: other.workspaceStatus } : {}),
+          },
+        );
+      }
+    }
+  }
+
+  private async provisionManagedWorkspaces(
+    projectKey: string,
+    featureKey: string,
+    itemKey: string,
+    leaseId: string,
+    scope: NonNullable<ReturnType<typeof decodeWorkItemScope>>,
+  ) {
+    const item = await this.requireItem(projectKey, featureKey, itemKey);
+    const project = await this.requireProject(projectKey);
+    const snapshots = await this.db.repositorySnapshot.findMany({
+      where: { workItemId: item.id },
+      include: { repository: true },
+      orderBy: { capturedAt: 'desc' },
+    });
+    const latestByRepository = new Map<string, (typeof snapshots)[number]>();
+    for (const snapshot of snapshots) {
+      if (!latestByRepository.has(snapshot.repository.key)) {
+        latestByRepository.set(snapshot.repository.key, snapshot);
+      }
+    }
+
+    const workspaceGit = this.workspaceGit();
+    const created: Array<{ repositoryPath: string; worktreePath: string; branch: string }> = [];
+    const workspaceData: Array<{
+      workItemId: string;
+      leaseId: string;
+      repositoryId: string;
+      path: string;
+      branch: string;
+      baseSha: string;
+    }> = [];
+
+    for (const scopedRepository of scope.repositories) {
+      const snapshot = latestByRepository.get(scopedRepository.repositoryKey);
+      if (!snapshot) {
+        fail('WORKTREE_BASELINE_NOT_FOUND');
+      }
+      const currentSnapshot = snapshot as NonNullable<typeof snapshot>;
+      const current = await this.git.capture(currentSnapshot.repository.path);
+      if (
+        current.dirty ||
+        current.sha !== currentSnapshot.sha ||
+        current.branch !== currentSnapshot.branch
+      ) {
+        fail('WORKTREE_BASELINE_STALE');
+      }
+
+      const repository = currentSnapshot.repository;
+      const branch = `workflow/${sanitizeGitSegment(projectKey)}/${sanitizeGitSegment(featureKey)}/${sanitizeGitSegment(itemKey)}/${sanitizeGitSegment(leaseId)}/${sanitizeGitSegment(repository.key)}`;
+      const worktreePath = path.resolve(
+        project.rootPath,
+        '.workflow',
+        'worktrees',
+        sanitizeGitSegment(projectKey),
+        sanitizeGitSegment(featureKey),
+        sanitizeGitSegment(itemKey),
+        sanitizeGitSegment(leaseId),
+        sanitizeGitSegment(repository.key),
+      );
+      workspaceData.push({
+        workItemId: item.id,
+        leaseId,
+        repositoryId: repository.id,
+        path: worktreePath,
+        branch,
+        baseSha: currentSnapshot.sha,
+      });
+    }
+
+    const persistedWorkspaces = await this.db.$transaction(async (transaction) => {
+      const persisted = [];
+      for (const data of workspaceData) {
+        persisted.push(await transaction.workItemWorkspace.create({
+          data: { ...data, status: 'PROVISIONING' },
+        }));
+      }
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_WORKTREES_PROVISIONING',
+          payloadJson: encodeJson({
+            leaseId,
+            workspaces: workspaceData.map((workspace) => ({
+              repositoryId: workspace.repositoryId,
+              path: workspace.path,
+              branch: workspace.branch,
+              baseSha: workspace.baseSha,
+            })),
+          }),
+        },
+      });
+      return persisted;
+    });
+
+    try {
+      for (const data of workspaceData) {
+        const repository = snapshots.find((snapshot) => snapshot.repository.id === data.repositoryId)?.repository;
+        if (!repository) {
+          fail('WORKTREE_BASELINE_NOT_FOUND');
+        }
+        const currentRepository = repository as NonNullable<typeof repository>;
+        created.push({ repositoryPath: currentRepository.path, worktreePath: data.path, branch: data.branch });
+        await workspaceGit.createWorktree({
+          repositoryPath: currentRepository.path,
+          worktreePath: data.path,
+          branch: data.branch,
+          sha: data.baseSha,
+        });
+        const workspace = persistedWorkspaces.find((candidate) => candidate.repositoryId === data.repositoryId);
+        if (workspace) {
+          await this.db.workItemWorkspace.update({
+            where: { id: workspace.id },
+            data: { status: 'ACTIVE' },
+          });
+        }
+      }
+      await this.db.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_WORKTREES_PROVISIONED',
+          payloadJson: encodeJson({ leaseId, workspaceCount: workspaceData.length }),
+        },
+      });
+      return persistedWorkspaces.map((workspace) => ({ ...workspace, status: 'ACTIVE' }));
+    } catch (error) {
+      await this.db.$transaction(async (transaction) => {
+        await transaction.workItemWorkspace.updateMany({
+          where: { leaseId, status: { in: ['PROVISIONING', 'ACTIVE'] } },
+          data: { status: 'ABANDONED' },
+        });
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: item.feature.projectId,
+            featureId: item.featureId,
+            workItemId: item.id,
+            type: 'SLICE_WORKTREE_PROVISION_FAILED',
+            payloadJson: encodeJson({
+              leaseId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          },
+        });
+      }).catch(() => undefined);
+      for (const workspace of created.reverse()) {
+        try {
+          await workspaceGit.removeWorktree(workspace.repositoryPath, workspace.worktreePath);
+        } catch {
+          // Cleanup is retryable and remains visible through the workspace row.
+        }
+        try {
+          await workspaceGit.deleteBranch(workspace.repositoryPath, workspace.branch);
+        } catch {
+          // Do not force-delete an unmerged branch.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async prepareIntegration(input: PrepareIntegrationInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'APPROVED') {
+      fail('INTEGRATION_PREPARE_STATE_INVALID');
+    }
+    const authorization = await this.requireManagedAuthorization(item.id);
+    const lease = await this.requireActiveLease(item.id);
+    const scope = decodeWorkItemScope(item.scopeJson);
+    if (!scope) {
+      fail('WORKTREE_SCOPE_REQUIRED');
+    }
+    const declaredScope = scope as NonNullable<typeof scope>;
+    const workspaces = await this.db.workItemWorkspace.findMany({
+      where: { leaseId: lease.id, status: 'ACTIVE' },
+      include: { repository: true },
+      orderBy: { repository: { key: 'asc' } },
+    });
+    if (!workspaces.length) {
+      fail('WORKTREE_NOT_FOUND');
+    }
+
+    const workspaceGit = this.workspaceGit();
+    const prepared: Array<{ repositoryKey: string; candidateSha: string; targetBaseSha: string }> = [];
+    try {
+      for (const workspace of workspaces) {
+        const target = await this.git.capture(workspace.repository.path);
+        if (
+          target.dirty ||
+          (workspace.repository.expectedBranch && target.branch !== workspace.repository.expectedBranch)
+        ) {
+          fail('INTEGRATION_TARGET_DIRTY');
+        }
+        const worktree = await this.git.capture(workspace.path);
+        if (worktree.dirty) {
+          fail('WORKTREE_DIRTY');
+        }
+        if (worktree.branch !== workspace.branch) {
+          fail('WORKTREE_BRANCH_MISMATCH');
+        }
+        await workspaceGit.rebaseWorktree(
+          workspace.path,
+          workspace.repository.expectedBranch ?? target.branch,
+        );
+        const targetAfterRebase = await this.git.capture(workspace.repository.path);
+        const rebasedWorktree = await this.git.capture(workspace.path);
+        if (
+          targetAfterRebase.dirty ||
+          targetAfterRebase.sha !== target.sha ||
+          targetAfterRebase.branch !== target.branch
+        ) {
+          if (!sameContentSnapshot(worktree, rebasedWorktree)) {
+            await this.invalidateGreenForManagedChange(
+              item,
+              lease.id,
+              'A branch de destino avançou durante o rebase da integração.',
+              {
+                targetBefore: target.sha,
+                targetAfter: targetAfterRebase.sha,
+                candidateBefore: worktree.sha,
+                candidateAfter: rebasedWorktree.sha,
+              },
+            );
+          }
+          fail('INTEGRATION_TARGET_STALE');
+        }
+        const candidateSha = await workspaceGit.getHead(workspace.path);
+        const changedFiles = await workspaceGit.diffFiles(
+          workspace.repository.path,
+          target.sha,
+          candidateSha,
+        );
+        if (!sameContentSnapshot(worktree, rebasedWorktree)) {
+          await this.invalidateGreenForManagedChange(
+            item,
+            lease.id,
+            'O rebase alterou o conteúdo validado; um novo GREEN é obrigatório.',
+            {
+              targetBaseSha: target.sha,
+              candidateBefore: worktree.sha,
+              candidateAfter: candidateSha,
+              changedFiles,
+            },
+          );
+          fail('INTEGRATION_GREEN_REVALIDATION_REQUIRED');
+        }
+        assertCandidateFilesInScope(declaredScope, workspace.repository.key, changedFiles);
+        await this.db.workItemWorkspace.update({
+          where: { id: workspace.id },
+          data: { candidateSha, targetBaseSha: target.sha },
+        });
+        prepared.push({
+          repositoryKey: workspace.repository.key,
+          candidateSha,
+          targetBaseSha: target.sha,
+        });
+      }
+    } catch (error) {
+      await this.db.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_PREPARE_FAILED',
+          payloadJson: encodeJson({
+            leaseId: lease.id,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        },
+      });
+      throw error;
+    }
+
+    const result = await this.db.$transaction(async (transaction) => {
+      await transaction.workItemIntegrationApproval.updateMany({
+        where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
+        data: { status: 'INVALIDATED' },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_PREPARED',
+          payloadJson: encodeJson({ leaseId: lease.id, prepared }),
+        },
+      });
+      return prepared;
+    });
+    return {
+      item,
+      executionMode: authorization.executionMode,
+      lease,
+      candidates: Object.fromEntries(result.map((entry) => [entry.repositoryKey, entry.candidateSha])),
+      targetBases: Object.fromEntries(result.map((entry) => [entry.repositoryKey, entry.targetBaseSha])),
+    };
+  }
+
+  async authorizeIntegration(input: AuthorizeIntegrationInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (item.state !== 'APPROVED') {
+      fail('INTEGRATION_APPROVAL_STATE_INVALID');
+    }
+    const actor = input.actor.trim();
+    if (!actor.toLowerCase().startsWith('human:') || !actor.slice('human:'.length).trim()) {
+      fail('INTEGRATION_HUMAN_APPROVAL_REQUIRED');
+    }
+    await this.requireManagedAuthorization(item.id);
+    const lease = await this.requireActiveLease(item.id);
+    const workspaces = await this.db.workItemWorkspace.findMany({
+      where: { leaseId: lease.id, status: 'ACTIVE' },
+      include: { repository: true },
+      orderBy: { repository: { key: 'asc' } },
+    });
+    const expectedKeys = workspaces.map((workspace) => workspace.repository.key).sort();
+    const candidateKeys = Object.keys(input.candidates).sort();
+    const baseKeys = Object.keys(input.targetBases).sort();
+    if (
+      JSON.stringify(expectedKeys) !== JSON.stringify(candidateKeys) ||
+      JSON.stringify(expectedKeys) !== JSON.stringify(baseKeys)
+    ) {
+      fail('INTEGRATION_APPROVAL_REPOSITORIES_MISMATCH');
+    }
+    const workspaceGit = this.workspaceGit();
+    for (const workspace of workspaces) {
+      const worktree = await this.git.capture(workspace.path);
+      const currentCandidate = await workspaceGit.getHead(workspace.path);
+      if (
+        !workspace.candidateSha ||
+        worktree.dirty ||
+        worktree.branch !== workspace.branch ||
+        currentCandidate !== workspace.candidateSha ||
+        input.candidates[workspace.repository.key] !== workspace.candidateSha
+      ) {
+        fail('INTEGRATION_CANDIDATE_STALE');
+      }
+      if (!input.targetBases[workspace.repository.key]) {
+        fail('INTEGRATION_TARGET_BASE_REQUIRED');
+      }
+      if (workspace.targetBaseSha && input.targetBases[workspace.repository.key] !== workspace.targetBaseSha) {
+        fail('INTEGRATION_TARGET_STALE');
+      }
+      const target = await this.git.capture(workspace.repository.path);
+      if (
+        target.dirty ||
+        target.sha !== input.targetBases[workspace.repository.key] ||
+        (workspace.repository.expectedBranch && target.branch !== workspace.repository.expectedBranch)
+      ) {
+        fail('INTEGRATION_TARGET_STALE');
+      }
+    }
+
+    return this.db.$transaction(async (transaction) => {
+      await transaction.workItemIntegrationApproval.updateMany({
+        where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
+        data: { status: 'INVALIDATED' },
+      });
+      const approval = await transaction.workItemIntegrationApproval.create({
+        data: {
+          workItemId: item.id,
+          actor,
+          candidatesJson: encodeJson(input.candidates),
+          targetBasesJson: encodeJson(input.targetBases),
+          status: 'AUTHORIZED',
+        },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_AUTHORIZED',
+          payloadJson: encodeJson({
+            approvalId: approval.id,
+            actor,
+            candidates: input.candidates,
+            targetBases: input.targetBases,
+          }),
+        },
+      });
+      return approval;
+    });
+  }
+
+  async integrateWorkItem(input: IntegrateWorkItemInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    if (!['APPROVED', 'CLOSED'].includes(item.state)) {
+      fail('INTEGRATION_STATE_INVALID');
+    }
+    await this.requireManagedAuthorization(item.id);
+    const approval = await this.db.workItemIntegrationApproval.findFirst({
+      where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!approval) {
+      fail('INTEGRATION_APPROVAL_REQUIRED');
+    }
+    const currentApproval = approval as NonNullable<typeof approval>;
+    const candidates = decodeJson<Record<string, string>>(
+      currentApproval.candidatesJson,
+      {},
+    );
+    const targetBases = decodeJson<Record<string, string>>(
+      currentApproval.targetBasesJson,
+      {},
+    );
+
+    // A process can stop after the Git fast-forward and before the ledger
+    // transaction. Reconcile that checkpoint before attempting another merge.
+    if (currentApproval.status === 'IN_PROGRESS' && item.state === 'CLOSED') {
+      await this.consumeIntegrationApproval(item, currentApproval.id, []);
+      const cleanup = await this.cleanupWorkItem(input);
+      return { item, integrated: Object.keys(candidates), cleanup };
+    }
+
+    const lease = await this.requireActiveLease(item.id);
+    const workspaces = await this.db.workItemWorkspace.findMany({
+      where: { leaseId: lease.id, status: 'ACTIVE' },
+      include: { repository: true },
+      orderBy: { repository: { key: 'asc' } },
+    });
+    if (!workspaces.length) {
+      fail('WORKTREE_NOT_FOUND');
+    }
+
+    const workspaceGit = this.workspaceGit();
+    if (currentApproval.status === 'IN_PROGRESS') {
+      const progress = await Promise.all(workspaces.map(async (workspace) => ({
+        repositoryKey: workspace.repository.key,
+        targetSha: (await this.git.capture(workspace.repository.path)).sha,
+        candidateSha: candidates[workspace.repository.key],
+        targetBaseSha: targetBases[workspace.repository.key],
+      })));
+      const allAtBase = progress.every((entry) => entry.targetSha === entry.targetBaseSha);
+      const allAtCandidate = progress.every((entry) => entry.targetSha === entry.candidateSha);
+      if (allAtCandidate) {
+        const closed = await this.transitionWorkItem({
+          projectKey: input.projectKey,
+          featureKey: input.featureKey,
+          itemKey: input.itemKey,
+          to: 'CLOSED',
+          commitSha: progress[0]?.candidateSha,
+          integrationApprovalId: currentApproval.id,
+          reason: 'Integração fast-forward retomada após checkpoint.',
+        });
+        await this.consumeIntegrationApproval(item, currentApproval.id, progress.map((entry) => ({
+          repositoryKey: entry.repositoryKey,
+          candidateSha: entry.candidateSha,
+          targetBaseSha: entry.targetBaseSha,
+        })));
+        const cleanup = await this.cleanupWorkItem(input);
+        return { item: closed, integrated: progress.map((entry) => entry.repositoryKey), cleanup };
+      }
+      if (!allAtBase) {
+        await this.markIntegrationFailure(item, currentApproval.id, [], 'INTEGRATION_RECOVERY_REQUIRED');
+        fail('INTEGRATION_RECOVERY_REQUIRED');
+      }
+      fail('INTEGRATION_ALREADY_IN_PROGRESS');
+    }
+
+    const scope = decodeWorkItemScope(item.scopeJson);
+    if (!scope) {
+      fail('WORKTREE_SCOPE_REQUIRED');
+    }
+    const declaredScope = scope as NonNullable<typeof scope>;
+    const preflight: Array<{ repositoryKey: string; candidateSha: string; targetBaseSha: string }> = [];
+    for (const workspace of workspaces) {
+      const target = await this.git.capture(workspace.repository.path);
+      const worktree = await this.git.capture(workspace.path);
+      const candidateSha = await workspaceGit.getHead(workspace.path);
+      if (
+        target.dirty ||
+        (workspace.repository.expectedBranch && target.branch !== workspace.repository.expectedBranch) ||
+        target.sha !== targetBases[workspace.repository.key] ||
+        worktree.dirty ||
+        worktree.branch !== workspace.branch ||
+        candidateSha !== candidates[workspace.repository.key]
+      ) {
+        await this.invalidateIntegrationApproval(item, currentApproval.id, 'INTEGRATION_CANDIDATE_STALE');
+        fail('INTEGRATION_CANDIDATE_STALE');
+      }
+      const changedFiles = await workspaceGit.diffFiles(
+        workspace.repository.path,
+        targetBases[workspace.repository.key],
+        candidateSha,
+      );
+      assertCandidateFilesInScope(declaredScope, workspace.repository.key, changedFiles);
+      preflight.push({
+        repositoryKey: workspace.repository.key,
+        candidateSha,
+        targetBaseSha: target.sha,
+      });
+    }
+
+    const closeReason = 'Integração fast-forward aprovada e concluída.';
+    const closeContext = await this.getTransitionContext(item, {
+      to: 'CLOSED',
+      commitSha: preflight[0]?.candidateSha,
+      reason: closeReason,
+    });
+    this.stateMachine.assertTransition('APPROVED', 'CLOSED', {
+      ...closeContext,
+      commitSha: preflight[0]?.candidateSha,
+    });
+    await this.markIntegrationInProgress(item, currentApproval.id, preflight);
+
+    const integrated: string[] = [];
+    try {
+      for (const workspace of workspaces) {
+        await workspaceGit.fastForward(workspace.repository.path, workspace.branch);
+        integrated.push(workspace.repository.key);
+      }
+    } catch (error) {
+      await this.markIntegrationFailure(
+        item,
+        currentApproval.id,
+        integrated,
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+
+    let closed;
+    try {
+      closed = await this.transitionWorkItem({
+        projectKey: input.projectKey,
+        featureKey: input.featureKey,
+        itemKey: input.itemKey,
+        to: 'CLOSED',
+        commitSha: preflight[0]?.candidateSha,
+        integrationApprovalId: currentApproval.id,
+        reason: closeReason,
+      });
+    } catch (error) {
+      await this.db.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_COMPLETION_FAILED',
+          payloadJson: encodeJson({
+            approvalId: currentApproval.id,
+            integrated,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        },
+      });
+      throw error;
+    }
+    await this.consumeIntegrationApproval(item, currentApproval.id, preflight);
+    const cleanup = await this.cleanupWorkItem(input);
+    return { item: closed, integrated, cleanup };
+  }
+
+  async cleanupWorkItem(input: CleanupWorkItemInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const allWorkspaces = await this.db.workItemWorkspace.findMany({
+      where: { workItemId: item.id, status: { in: ['ACTIVE', 'PROVISIONING', 'ABANDONED', 'CLEANUP_FAILED'] } },
+      include: { repository: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (
+      item.state !== 'CLOSED' &&
+      allWorkspaces.some((workspace) => ['ACTIVE', 'PROVISIONING'].includes(workspace.status))
+    ) {
+      fail('WORKTREE_CLEANUP_STATE_INVALID');
+    }
+    const workspaces = item.state === 'CLOSED'
+      ? allWorkspaces
+      : allWorkspaces.filter((workspace) => !['ACTIVE', 'PROVISIONING'].includes(workspace.status));
+    if (!workspaces.length) {
+      return [];
+    }
+    const workspaceGit = this.workspaceGit();
+    const results: Array<{ id: string; status: string; error?: string }> = [];
+    for (const workspace of workspaces) {
+      try {
+        await workspaceGit.removeWorktree(workspace.repository.path, workspace.path);
+        await workspaceGit.deleteBranch(workspace.repository.path, workspace.branch);
+        await this.db.workItemWorkspace.update({
+          where: { id: workspace.id },
+          data: { status: 'REMOVED', removedAt: new Date(), cleanupError: null },
+        });
+        results.push({ id: workspace.id, status: 'REMOVED' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.db.workItemWorkspace.update({
+          where: { id: workspace.id },
+          data: { status: 'CLEANUP_FAILED', cleanupError: message },
+        });
+        results.push({ id: workspace.id, status: 'CLEANUP_FAILED', error: message });
+      }
+    }
+    if (results.length) {
+      await this.db.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_WORKTREES_CLEANED',
+          payloadJson: encodeJson({ results }),
+        },
+      });
+    }
+    return results;
+  }
+
+  async getExecutionRepositoryPath(input: {
+    projectKey: string;
+    featureKey: string;
+    itemKey: string;
+    repositoryKey: string;
+  }): Promise<string> {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const repository = await this.db.repository.findFirst({
+      where: { projectId: item.feature.projectId, key: input.repositoryKey },
+    });
+    if (!repository) {
+      fail('REPOSITORY_NOT_FOUND');
+    }
+    const authorization = await this.db.authorization.findFirst({
+      where: { workItemId: item.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (authorization?.executionMode !== 'MANAGED_WORKTREE') {
+      return (repository as NonNullable<typeof repository>).path;
+    }
+    const lease = await this.requireActiveLease(item.id);
+    const workspace = await this.db.workItemWorkspace.findFirst({
+      where: {
+        leaseId: lease.id,
+        repositoryId: (repository as NonNullable<typeof repository>).id,
+        status: 'ACTIVE',
+      },
+    });
+    if (!workspace) {
+      fail('WORKTREE_NOT_FOUND');
+    }
+    return (workspace as NonNullable<typeof workspace>).path;
+  }
+
+  private async getExecutionRepositoryPathById(
+    itemId: string,
+    repositoryId: string,
+    fallbackPath: string,
+  ): Promise<string> {
+    const authorization = await this.db.authorization.findFirst({
+      where: { workItemId: itemId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (authorization?.executionMode !== 'MANAGED_WORKTREE') {
+      return fallbackPath;
+    }
+    const lease = await this.db.workItemLease.findFirst({
+      where: { workItemId: itemId, releasedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { acquiredAt: 'desc' },
+    });
+    if (!lease) {
+      return fallbackPath;
+    }
+    const workspace = await this.db.workItemWorkspace.findFirst({
+      where: { leaseId: lease.id, repositoryId, status: 'ACTIVE' },
+    });
+    return workspace?.path ?? fallbackPath;
+  }
+
+  private async requireManagedAuthorization(itemId: string) {
+    const authorization = await this.db.authorization.findFirst({
+      where: { workItemId: itemId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!authorization || authorization.executionMode !== 'MANAGED_WORKTREE') {
+      fail('MANAGED_WORKTREE_REQUIRED');
+    }
+    return authorization as NonNullable<typeof authorization>;
+  }
+
+  private async requireActiveLease(itemId: string) {
+    const lease = await this.db.workItemLease.findFirst({
+      where: { workItemId: itemId, releasedAt: null },
+      orderBy: { acquiredAt: 'desc' },
+    });
+    if (!lease) {
+      fail('SLICE_RESERVATION_NOT_FOUND');
+    }
+    if ((lease as NonNullable<typeof lease>).expiresAt <= new Date()) {
+      fail('SLICE_RESERVATION_EXPIRED');
+    }
+    return lease as NonNullable<typeof lease>;
+  }
+
+  private async invalidateIntegrationApproval(
+    item: WorkItemWithFeature,
+    approvalId: string,
+    reason: string,
+  ) {
+    await this.db.$transaction(async (transaction) => {
+      await transaction.workItemIntegrationApproval.update({
+        where: { id: approvalId },
+        data: { status: 'INVALIDATED' },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_INVALIDATED',
+          payloadJson: encodeJson({ approvalId, reason }),
+        },
+      });
+    });
+  }
+
+  private async markIntegrationInProgress(
+    item: WorkItemWithFeature,
+    approvalId: string,
+    preflight: Array<{ repositoryKey: string; candidateSha: string; targetBaseSha: string }>,
+  ): Promise<void> {
+    await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const updated = await transaction.workItemIntegrationApproval.updateMany({
+        where: { id: approvalId, status: 'AUTHORIZED' },
+        data: { status: 'IN_PROGRESS' },
+      });
+      if (updated.count !== 1) {
+        const current = await transaction.workItemIntegrationApproval.findUnique({ where: { id: approvalId } });
+        if (current?.status === 'IN_PROGRESS') {
+          fail('INTEGRATION_ALREADY_IN_PROGRESS');
+        }
+        fail('INTEGRATION_APPROVAL_STALE');
+      }
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATION_STARTED',
+          payloadJson: encodeJson({ approvalId, preflight }),
+        },
+      });
+    });
+  }
+
+  private async markIntegrationFailure(
+    item: WorkItemWithFeature,
+    approvalId: string,
+    integrated: string[],
+    reason: string,
+  ): Promise<void> {
+    await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await transaction.workItemIntegrationApproval.updateMany({
+        where: { id: approvalId, status: 'IN_PROGRESS' },
+        data: { status: integrated.length ? 'PARTIAL' : 'FAILED' },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: integrated.length ? 'SLICE_INTEGRATION_PARTIAL' : 'SLICE_INTEGRATION_FAILED',
+          payloadJson: encodeJson({ approvalId, integrated, reason }),
+        },
+      });
+    });
+  }
+
+  private async consumeIntegrationApproval(
+    item: WorkItemWithFeature,
+    approvalId: string,
+    preflight: Array<{ repositoryKey: string; candidateSha?: string; targetBaseSha?: string }>,
+  ): Promise<void> {
+    await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const approval = await transaction.workItemIntegrationApproval.findUnique({ where: { id: approvalId } });
+      if (!approval) {
+        fail('INTEGRATION_APPROVAL_REQUIRED');
+      }
+      if ((approval as NonNullable<typeof approval>).status === 'CONSUMED') {
+        return;
+      }
+      if ((approval as NonNullable<typeof approval>).status !== 'IN_PROGRESS') {
+        fail('INTEGRATION_APPROVAL_STALE');
+      }
+      await transaction.workItemIntegrationApproval.update({
+        where: { id: approvalId },
+        data: { status: 'CONSUMED', consumedAt: new Date() },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_INTEGRATED',
+          payloadJson: encodeJson({ approvalId, preflight }),
+        },
+      });
+    });
+  }
+
+  private async invalidateGreenForManagedChange(
+    item: WorkItemWithFeature,
+    leaseId: string,
+    reason: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const current = await transaction.workItem.findUnique({ where: { id: item.id } });
+      if (!current || !['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(current.state)) {
+        return;
+      }
+      await transaction.workItem.update({
+        where: { id: item.id },
+        data: { state: 'IMPLEMENTING' },
+      });
+      await transaction.workItemWorkspace.updateMany({
+        where: { leaseId, status: 'ACTIVE' },
+        data: { candidateSha: null, targetBaseSha: null },
+      });
+      await transaction.workItemIntegrationApproval.updateMany({
+        where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
+        data: { status: 'INVALIDATED' },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'GREEN_INVALIDATED',
+          payloadJson: encodeJson({
+            from: current.state,
+            to: 'IMPLEMENTING',
+            reason,
+            leaseId,
+            ...details,
+          }),
+        },
+      });
     });
   }
 
@@ -891,13 +2262,33 @@ export class WorkflowLedger {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
     const from = item.state as WorkItemState;
     const to = input.to as WorkItemState;
+    if (to === 'CLOSED') {
+      const authorization = await this.db.authorization.findFirst({
+        where: { workItemId: item.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (authorization?.executionMode === 'MANAGED_WORKTREE') {
+        const integrationApproval = await this.db.workItemIntegrationApproval.findFirst({
+          where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!integrationApproval) {
+          fail('INTEGRATION_APPROVAL_REQUIRED');
+        }
+        const authorizedApproval = integrationApproval as NonNullable<typeof integrationApproval>;
+        if (input.integrationApprovalId !== authorizedApproval.id) {
+          fail('MANAGED_WORKTREE_INTEGRATION_REQUIRED');
+        }
+      }
+    }
     const context = await this.getTransitionContext(item, input);
 
     this.stateMachine.assertTransition(from, to, context);
 
     return this.db.$transaction(async (transaction) => {
-      const updated = await transaction.workItem.update({
-        where: { id: item.id },
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const updateResult = await transaction.workItem.updateMany({
+        where: { id: item.id, state: from },
         data: {
           state: to,
           ...(to === 'CLOSED' && input.commitSha
@@ -905,6 +2296,14 @@ export class WorkflowLedger {
             : {}),
         },
       });
+      if (updateResult.count !== 1) {
+        fail('WORK_ITEM_STATE_CHANGED_CONCURRENTLY');
+      }
+      const updated = await transaction.workItem.findUnique({ where: { id: item.id } });
+      if (!updated) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      const currentUpdated = updated as NonNullable<typeof updated>;
 
       await transaction.workflowEvent.create({
         data: {
@@ -916,7 +2315,31 @@ export class WorkflowLedger {
         },
       });
 
-      return updated;
+      if (to === 'CLOSED' || to === 'BLOCKED') {
+        if (to === 'BLOCKED') {
+          await transaction.workItemWorkspace.updateMany({
+            where: { workItemId: item.id, status: 'ACTIVE' },
+            data: { status: 'ABANDONED' },
+          });
+        }
+        const released = await transaction.workItemLease.updateMany({
+          where: { workItemId: item.id, releasedAt: null },
+          data: { releasedAt: new Date() },
+        });
+        if (released.count > 0) {
+          await transaction.workflowEvent.create({
+            data: {
+              projectId: item.feature.projectId,
+              featureId: item.featureId,
+              workItemId: item.id,
+              type: 'SLICE_LEASE_RELEASED',
+              payloadJson: encodeJson({ reason: to === 'CLOSED' ? 'ITEM_CLOSED' : 'ITEM_BLOCKED' }),
+            },
+          });
+        }
+      }
+
+      return currentUpdated;
     });
   }
 
@@ -990,6 +2413,9 @@ export class WorkflowLedger {
       latestReviewEvent,
       currentEvents,
       lineage,
+      dependencies,
+      activeLease,
+      latestIntegrationApproval,
     ] =
       await Promise.all([
         this.db.authorization.findFirst({
@@ -1072,6 +2498,20 @@ export class WorkflowLedger {
             },
           },
         }),
+        this.db.workItemDependency.findMany({
+          where: { workItemId: item.id },
+          include: { dependsOnItem: { include: { feature: true } } },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.db.workItemLease.findFirst({
+          where: { workItemId: item.id, releasedAt: null },
+          include: { workspaces: { include: { repository: true }, orderBy: { createdAt: 'asc' } } },
+          orderBy: { acquiredAt: 'desc' },
+        }),
+        this.db.workItemIntegrationApproval.findFirst({
+          where: { workItemId: item.id },
+          orderBy: { createdAt: 'desc' },
+        }),
       ]);
 
     const latestValidations = ['RED', 'GREEN', 'CHECK']
@@ -1123,12 +2563,47 @@ export class WorkflowLedger {
               instruction: authorization.instruction,
               allowedEffects: decodeJson(authorization.allowedEffectsJson, []),
               forbiddenEffects: decodeJson(authorization.forbiddenEffectsJson, []),
+              executionMode: authorization.executionMode,
               scope: decodeWorkItemScope(item.scopeJson),
             }
           : undefined,
         lineage: {
           parent: lineage?.parentItem ?? undefined,
           children: lineage?.childItems ?? [],
+        },
+        dependencies: dependencies.map((dependency) => ({
+          featureKey: dependency.dependsOnItem.feature.key,
+          itemKey: dependency.dependsOnItem.key,
+          title: dependency.dependsOnItem.title,
+          state: dependency.dependsOnItem.state,
+        })),
+        execution: {
+          lease: activeLease
+            ? {
+                id: activeLease.id,
+                holder: activeLease.holder,
+                expiresAt: activeLease.expiresAt.toISOString(),
+              }
+            : undefined,
+          workspaces: activeLease?.workspaces.map((workspace) => ({
+            repository: workspace.repository.key,
+            path: workspace.path,
+            branch: workspace.branch,
+            baseSha: workspace.baseSha,
+            targetBaseSha: workspace.targetBaseSha ?? undefined,
+            candidateSha: workspace.candidateSha ?? undefined,
+            status: workspace.status,
+            cleanupError: workspace.cleanupError,
+          })) ?? [],
+          integrationApproval: latestIntegrationApproval
+            ? {
+                id: latestIntegrationApproval.id,
+                actor: latestIntegrationApproval.actor,
+                status: latestIntegrationApproval.status,
+                candidates: decodeJson(latestIntegrationApproval.candidatesJson, {}),
+                targetBases: decodeJson(latestIntegrationApproval.targetBasesJson, {}),
+              }
+            : undefined,
         },
         baselines: snapshots.map((snapshot) => ({
           repository: snapshot.repository.key,
@@ -1188,7 +2663,7 @@ export class WorkflowLedger {
 
   async getRecord(input: RecordRequest) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
-    const [useCases, criteria, tests, authorization, snapshots, validations, reviews, decisions, pendingItems, lineage] =
+    const [useCases, criteria, tests, authorization, snapshots, validations, reviews, decisions, pendingItems, lineage, dependencies, workspaces, integrationApprovals] =
       await Promise.all([
         this.db.useCase.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
         this.db.acceptanceCriterion.findMany({ where: { workItemId: item.id }, orderBy: { key: 'asc' } }),
@@ -1221,6 +2696,20 @@ export class WorkflowLedger {
             },
           },
         }),
+        this.db.workItemDependency.findMany({
+          where: { workItemId: item.id },
+          include: { dependsOnItem: { include: { feature: true } } },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.db.workItemWorkspace.findMany({
+          where: { workItemId: item.id },
+          include: { repository: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.db.workItemIntegrationApproval.findMany({
+          where: { workItemId: item.id },
+          orderBy: { createdAt: 'desc' },
+        }),
       ]);
 
     return {
@@ -1232,10 +2721,10 @@ export class WorkflowLedger {
         state: item.state,
         summary: item.summary,
         tddPolicy: item.tddPolicy,
-          currentSha: item.currentSha,
-          requirementsComplete: item.requirementsComplete,
-          scope: decodeWorkItemScope(item.scopeJson),
-        },
+        currentSha: item.currentSha,
+        requirementsComplete: item.requirementsComplete,
+        scope: decodeWorkItemScope(item.scopeJson),
+      },
       lineage: {
         parent: lineage?.parentItem ?? undefined,
         children: lineage?.childItems ?? [],
@@ -1249,6 +2738,7 @@ export class WorkflowLedger {
             actor: authorization.actor,
             allowedEffects: decodeJson(authorization.allowedEffectsJson, []),
             forbiddenEffects: decodeJson(authorization.forbiddenEffectsJson, []),
+            executionMode: authorization.executionMode,
             scope: decodeWorkItemScope(item.scopeJson),
           }
         : undefined,
@@ -1276,6 +2766,32 @@ export class WorkflowLedger {
       reviews,
       decisions,
       pendingItems,
+      dependencies: dependencies.map((dependency) => ({
+        featureKey: dependency.dependsOnItem.feature.key,
+        itemKey: dependency.dependsOnItem.key,
+        title: dependency.dependsOnItem.title,
+        state: dependency.dependsOnItem.state,
+      })),
+      workspaces: workspaces.map((workspace) => ({
+        id: workspace.id,
+        repository: workspace.repository.key,
+        path: workspace.path,
+        branch: workspace.branch,
+        baseSha: workspace.baseSha,
+        targetBaseSha: workspace.targetBaseSha,
+        candidateSha: workspace.candidateSha,
+        status: workspace.status,
+        cleanupError: workspace.cleanupError,
+      })),
+      integrationApprovals: integrationApprovals.map((approval) => ({
+        id: approval.id,
+        actor: approval.actor,
+        status: approval.status,
+        candidates: decodeJson(approval.candidatesJson, {}),
+        targetBases: decodeJson(approval.targetBasesJson, {}),
+        createdAt: approval.createdAt,
+        consumedAt: approval.consumedAt,
+      })),
     };
   }
 
@@ -2123,7 +3639,10 @@ export class WorkflowLedger {
     const usesGreenEvidence = ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED', 'CLOSED']
       .includes(input.to);
     const [authorization, tests, red, review, greenContext, sliceSizeContext] = await Promise.all([
-      this.db.authorization.findFirst({ where: { workItemId: item.id } }),
+      this.db.authorization.findFirst({
+        where: { workItemId: item.id },
+        orderBy: { createdAt: 'desc' },
+      }),
       this.db.testSpecification.count({ where: { workItemId: item.id } }),
       this.db.validationRun.findFirst({
         where: {
@@ -2160,7 +3679,11 @@ export class WorkflowLedger {
     const currentRedSnapshot = redEvidence && (
       redEvidenceSummary.fingerprint || redEvidenceSummary.contentFingerprint
     )
-      ? await this.git.capture(redEvidence.profile.repository.path)
+      ? await this.git.capture(await this.getExecutionRepositoryPathById(
+        item.id,
+        redEvidence.profile.repository.id,
+        redEvidence.profile.repository.path,
+      ))
       : undefined;
     const currentSha = input.to === 'RED_CONFIRMED'
       ? currentRedSnapshot?.sha ?? item.currentSha ?? redEvidence?.sha
@@ -2310,8 +3833,11 @@ export class WorkflowLedger {
               {},
             )
           : {};
-        const currentSnapshot = captureCurrent && validation
-          ? await this.git.capture(repository.path)
+        const executionPath = captureCurrent && validation
+          ? await this.getExecutionRepositoryPathById(item.id, repository.id, repository.path)
+          : undefined;
+        const currentSnapshot = executionPath
+          ? await this.git.capture(executionPath)
           : undefined;
 
         return { repository, validation, summary, currentSnapshot };
@@ -2457,6 +3983,203 @@ export class WorkflowLedger {
 export const isWorkflowApplicationError = (
   error: unknown,
 ): error is WorkflowApplicationError => error instanceof WorkflowApplicationError;
+
+function hasDependencyPath(
+  edges: Array<{ from: string; to: string }>,
+  start: string,
+  target: string,
+): boolean {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const values = adjacency.get(edge.from) ?? [];
+    values.push(edge.to);
+    adjacency.set(edge.from, values);
+  }
+  const pending = [start];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const current = pending.shift() as string;
+    if (current === target) {
+      return true;
+    }
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+    pending.push(...(adjacency.get(current) ?? []));
+  }
+  return false;
+}
+
+function findScopeConflicts(
+  left: { repositories: Array<{ repositoryKey: string; paths: string[] }> },
+  right: { repositories: Array<{ repositoryKey: string; paths: string[] }> },
+  repositoryPaths?: Map<string, string>,
+): Array<{ repositoryKey: string; leftPath: string; rightPath: string; rightRepositoryKey?: string }> {
+  const conflicts: Array<{ repositoryKey: string; leftPath: string; rightPath: string; rightRepositoryKey?: string }> = [];
+  for (const leftRepository of left.repositories) {
+    for (const rightRepository of right.repositories) {
+      const sameRepositoryKey = rightRepository.repositoryKey === leftRepository.repositoryKey;
+      const leftRepositoryPath = repositoryPaths?.get(leftRepository.repositoryKey);
+      const rightRepositoryPath = repositoryPaths?.get(rightRepository.repositoryKey);
+      const repositoriesOverlap = Boolean(
+        leftRepositoryPath &&
+        rightRepositoryPath &&
+        repositoryRootsOverlap(leftRepositoryPath, rightRepositoryPath),
+      );
+      if (!sameRepositoryKey && !repositoriesOverlap) {
+        continue;
+      }
+      const leftPaths = leftRepository.paths.length ? leftRepository.paths : [''];
+      const rightPaths = rightRepository.paths.length ? rightRepository.paths : [''];
+      for (const leftPath of leftPaths) {
+        for (const rightPath of rightPaths) {
+          const overlaps = sameRepositoryKey
+            ? scopePathsOverlap(leftPath, rightPath)
+            : scopePathsOverlap(
+                resolveScopePattern(repositoryPaths?.get(leftRepository.repositoryKey), leftPath),
+                resolveScopePattern(repositoryPaths?.get(rightRepository.repositoryKey), rightPath),
+              );
+          if (overlaps) {
+            conflicts.push({
+              repositoryKey: leftRepository.repositoryKey,
+              leftPath,
+              rightPath,
+              ...(sameRepositoryKey ? {} : { rightRepositoryKey: rightRepository.repositoryKey }),
+            });
+          }
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+
+function resolveScopePattern(repositoryPath: string | undefined, pattern: string): string {
+  if (!repositoryPath) {
+    return pattern;
+  }
+  return path.resolve(repositoryPath, normalizeScopePath(pattern) || '.');
+}
+
+function repositoryRootsOverlap(left: string, right: string): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return normalizedLeft === normalizedRight
+    || normalizedLeft.startsWith(`${normalizedRight}${path.sep}`)
+    || normalizedRight.startsWith(`${normalizedLeft}${path.sep}`);
+}
+
+function assertCandidateFilesInScope(
+  scope: NonNullable<ReturnType<typeof decodeWorkItemScope>>,
+  repositoryKey: string,
+  changedFiles: string[],
+): void {
+  const repositoryScope = scope.repositories.find((entry) => entry.repositoryKey === repositoryKey);
+  if (!repositoryScope) {
+    fail('WORK_ITEM_SCOPE_VIOLATION', 'O candidato alterou um repositório fora do escopo autorizado.', {
+      repositoryKey,
+      changedFiles,
+    });
+  }
+
+  const allowedPaths = repositoryScope?.paths.length ? repositoryScope.paths : [''];
+  const outsideScope = changedFiles.filter((file) => !allowedPaths.some((pattern) => scopePathContains(pattern, file)));
+  if (outsideScope.length) {
+    fail(
+      'WORK_ITEM_SCOPE_VIOLATION',
+      'O candidato contém arquivos fora do escopo técnico declarado.',
+      {
+        repositoryKey,
+        changedFiles: outsideScope,
+        allowedPaths,
+      },
+    );
+  }
+}
+
+function scopePathContains(pattern: string, file: string): boolean {
+  const normalizedPattern = normalizeScopePath(pattern);
+  const normalizedFile = normalizeScopePath(file);
+  if (!normalizedPattern) {
+    return true;
+  }
+  if (!normalizedFile) {
+    return false;
+  }
+  if (!/[?*]/.test(normalizedPattern)) {
+    return normalizedFile === normalizedPattern || normalizedFile.startsWith(`${normalizedPattern}/`);
+  }
+  return globMatchesPath(normalizedPattern, normalizedFile);
+}
+
+function scopePathsOverlap(left: string, right: string): boolean {
+  const normalizedLeft = normalizeScopePath(left);
+  const normalizedRight = normalizeScopePath(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return true;
+  }
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+
+  const leftGlob = /[*?]/.test(normalizedLeft);
+  const rightGlob = /[*?]/.test(normalizedRight);
+  if (!leftGlob && !rightGlob) {
+    return normalizedLeft.startsWith(`${normalizedRight}/`) || normalizedRight.startsWith(`${normalizedLeft}/`);
+  }
+
+  if (leftGlob && !rightGlob) {
+    return globMatchesPath(normalizedLeft, normalizedRight);
+  }
+  if (!leftGlob && rightGlob) {
+    return globMatchesPath(normalizedRight, normalizedLeft);
+  }
+
+  const leftPrefix = staticGlobPrefix(normalizedLeft);
+  const rightPrefix = staticGlobPrefix(normalizedRight);
+  if (!leftPrefix || !rightPrefix) {
+    return true;
+  }
+  return leftPrefix === rightPrefix ||
+    leftPrefix.startsWith(`${rightPrefix}/`) ||
+    rightPrefix.startsWith(`${leftPrefix}/`);
+}
+
+function normalizeScopePath(value: string): string {
+  const normalized = value.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
+  return normalized === '.' ? '' : normalized;
+}
+
+function staticGlobPrefix(pattern: string): string {
+  const wildcard = pattern.search(/[?*]/);
+  const prefix = wildcard < 0 ? pattern : pattern.slice(0, wildcard);
+  return prefix.replace(/\/[^/]*$/, '').replace(/\/$/, '');
+}
+
+function globMatchesPath(pattern: string, value: string): boolean {
+  const source = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '.*')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]');
+  return new RegExp(`^${source}(?:/.*)?$`).test(value);
+}
+
+function sameContentSnapshot(
+  left: { contentFingerprint?: string; sha: string },
+  right: { contentFingerprint?: string; sha: string },
+): boolean {
+  if (left.contentFingerprint && right.contentFingerprint) {
+    return left.contentFingerprint === right.contentFingerprint;
+  }
+  return left.sha === right.sha;
+}
+
+function sanitizeGitSegment(value: string): string {
+  const sanitized = value.trim().replace(/[^A-Za-z0-9._-]+/g, '-');
+  return sanitized || 'item';
+}
 
 function isUniqueConstraintError(error: unknown): boolean {
   return typeof error === 'object'

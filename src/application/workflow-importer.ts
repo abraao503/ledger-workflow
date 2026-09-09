@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 
 import { workItemStates } from '../domain/workflow-state.js';
+import { validateWorkItemScope } from '../domain/work-item-scope.js';
 import { fail } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
 
@@ -53,12 +54,29 @@ const baselineSchema = z.object({
   changedFiles: z.array(z.string()).default([]),
 });
 
+const scopeSchema = z.object({
+  repositories: z.array(z.object({
+    repositoryKey: z.string().min(1),
+    paths: z.array(z.string()),
+  })),
+}).superRefine((scope, context) => {
+  for (const issue of validateWorkItemScope(scope)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: issue.code });
+  }
+});
+
+const dependencySchema = z.object({
+  featureKey: z.string().min(1),
+  itemKey: z.string().min(1),
+});
+
 const authorizationSchema = z.object({
   instruction: z.string(),
   actor: z.string(),
   allowedEffects: z.array(z.string()).default([]),
   forbiddenEffects: z.array(z.string()).default([]),
   baselines: z.array(baselineSchema).default([]),
+  executionMode: z.enum(['SHARED', 'MANAGED_WORKTREE']).default('SHARED'),
 });
 
 const validationSchema = z.object({
@@ -84,6 +102,8 @@ const itemSchema = z.object({
   tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).default('REQUIRED'),
   requirementsComplete: z.boolean().optional(),
   currentSha: z.string().optional(),
+  scope: scopeSchema.optional(),
+  dependsOn: z.array(dependencySchema).default([]),
   useCases: z.array(useCaseSchema).default([]),
   criteria: z.array(criterionSchema).default([]),
   tests: z.array(testSchema).default([]),
@@ -324,6 +344,7 @@ export class WorkflowImporter {
               requirementsComplete,
               tddPolicy: itemInput.tddPolicy,
               currentSha: itemInput.currentSha,
+              scopeJson: itemInput.scope ? encodeJson(itemInput.scope) : undefined,
             },
             update: {
               phaseKey: itemInput.phaseKey,
@@ -335,6 +356,7 @@ export class WorkflowImporter {
               requirementsComplete,
               tddPolicy: itemInput.tddPolicy,
               currentSha: itemInput.currentSha,
+              scopeJson: itemInput.scope ? encodeJson(itemInput.scope) : null,
             },
           });
           items.set(`${feature.key}:${item.key}`, item);
@@ -427,6 +449,7 @@ export class WorkflowImporter {
             const authorizationData = {
               instruction: itemInput.authorization.instruction,
               actor: itemInput.authorization.actor,
+              executionMode: itemInput.authorization.executionMode,
               allowedEffectsJson: encodeJson(itemInput.authorization.allowedEffects),
               forbiddenEffectsJson: encodeJson(itemInput.authorization.forbiddenEffects),
             };
@@ -507,6 +530,56 @@ export class WorkflowImporter {
                 summaryJson: encodeJson(validationInput.summary),
               },
             });
+          }
+        }
+      }
+
+      const importedItemIds = [...items.values()].map((item) => item.id);
+      if (importedItemIds.length > 0) {
+        await transaction.workItemDependency.deleteMany({
+          where: { workItemId: { in: importedItemIds } },
+        });
+      }
+      const dependencyEdges = (await transaction.workItemDependency.findMany({
+        select: { workItemId: true, dependsOnItemId: true },
+      })).map((dependency) => ({ from: dependency.workItemId, to: dependency.dependsOnItemId }));
+      for (const featureInput of document.features) {
+        for (const itemInput of featureInput.items) {
+          const item = items.get(`${featureInput.key}:${itemInput.key}`);
+          if (!item) {
+            fail('WORK_ITEM_NOT_FOUND');
+          }
+          const currentItem = item as NonNullable<typeof item>;
+          const dependencyKeys = new Set<string>();
+          for (const dependencyInput of itemInput.dependsOn) {
+            const dependencyKey = `${dependencyInput.featureKey}:${dependencyInput.itemKey}`;
+            if (dependencyKeys.has(dependencyKey)) {
+              fail('DUPLICATE_WORK_ITEM_DEPENDENCY');
+            }
+            dependencyKeys.add(dependencyKey);
+            const dependencyFeature = await transaction.feature.findFirst({
+              where: { projectId: project.id, key: dependencyInput.featureKey },
+            });
+            if (!dependencyFeature) {
+              fail('DEPENDENCY_FEATURE_NOT_FOUND');
+            }
+            const dependencyItem = await transaction.workItem.findFirst({
+              where: {
+                featureId: (dependencyFeature as NonNullable<typeof dependencyFeature>).id,
+                key: dependencyInput.itemKey,
+              },
+            });
+            if (!dependencyItem) {
+              fail('DEPENDENCY_ITEM_NOT_FOUND');
+            }
+            const currentDependency = dependencyItem as NonNullable<typeof dependencyItem>;
+            if (currentDependency.id === currentItem.id || hasDependencyPath(dependencyEdges, currentDependency.id, currentItem.id)) {
+              fail('WORK_ITEM_DEPENDENCY_CYCLE');
+            }
+            await transaction.workItemDependency.create({
+              data: { workItemId: currentItem.id, dependsOnItemId: currentDependency.id },
+            });
+            dependencyEdges.push({ from: currentItem.id, to: currentDependency.id });
           }
         }
       }
@@ -718,4 +791,27 @@ function hasRequirements(item: z.infer<typeof itemSchema>): boolean {
   return item.useCases.length > 0 &&
     item.criteria.some((criterion) => criterion.required) &&
     (item.kind !== 'CODE' || item.tddPolicy !== 'REQUIRED' || item.tests.length > 0);
+}
+
+function hasDependencyPath(
+  edges: Array<{ from: string; to: string }>,
+  start: string,
+  target: string,
+): boolean {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const next = adjacency.get(edge.from) ?? [];
+    next.push(edge.to);
+    adjacency.set(edge.from, next);
+  }
+  const pending = [start];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.shift() as string;
+    if (current === target) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    pending.push(...(adjacency.get(current) ?? []));
+  }
+  return false;
 }

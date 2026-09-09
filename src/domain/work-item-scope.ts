@@ -15,11 +15,12 @@ export type ScopeIssue = {
 export function validateWorkItemScope(scope: WorkItemScope): ScopeIssue[] {
   const issues: ScopeIssue[] = [];
 
-  if (!scope.repositories.length) {
+  if (!scope || !Array.isArray(scope.repositories) || !scope.repositories.length) {
     issues.push({
       code: 'SCOPE_EMPTY',
       message: 'A fatia deve declarar ao menos um repositório alvo.',
     });
+    return issues;
   }
 
   const repositories = new Set<string>();

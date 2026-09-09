@@ -166,10 +166,47 @@ os repositórios autorizados.
 O conjunto autorizado deve ser igual ao conjunto declarado no escopo. A
 autorização captura baselines de Git e rejeita worktrees sujas ou na branch
 inesperada.
+No modo `MANAGED_WORKTREE`, cada repositório precisa declarar uma branch de
+destino explícita. Antes da aprovação e da integração, os arquivos do diff
+`target...candidate` são comparados com os padrões do escopo; declaração de
+escopo não é apenas uma trava entre claims.
 
 Quando houver concorrência, reserve a fatia autorizada com `item claim`. Uma
 reserva expirada pode ser recuperada com `item recover`. Não trabalhe em uma
 fatia reservada por outro agente.
+
+Dependências são explícitas e acíclicas. Declare-as em `item define --depends-on
+<feature>:<item>` ou use `item dependency add/remove/list` enquanto a fatia
+estiver em `DRAFT` ou `READY`. O `claim` só libera uma fatia quando todas as
+dependências estão `CLOSED`; não use a posição da fatia como substituto do
+grafo.
+
+Para paralelizar com isolamento, autorize `--execution-mode MANAGED_WORKTREE`
+em uma fatia que tenha escopo técnico declarado. O `claim` cria uma worktree e
+uma branch por repositório do escopo, e as validações passam a usar esses
+caminhos. O ledger bloqueia claims com paths sobrepostos. Uma recuperação
+expirada abandona as worktrees antigas e cria novas; não reutilize nem remova
+forçadamente a worktree de outro agente.
+
+O fluxo de integração gerenciado é deliberadamente controlado:
+
+1. Depois de GREEN e da revisão, execute `item prepare-integration`.
+2. Um operador humano autoriza os mapas exatos de candidatos e bases com
+   `item authorize-integration` (`human:<identidade>`).
+3. Execute `item integrate`; o ledger revalida checkout limpo, branch e SHA,
+   faz somente `git merge --ff-only`, fecha a fatia e tenta limpar as
+   worktrees.
+
+Se a limpeza não for possível, o estado `CLEANUP_FAILED` fica registrado e
+`item cleanup-worktrees` pode ser tentado novamente. Não feche uma fatia
+`MANAGED_WORKTREE` diretamente com `item transition --to CLOSED`: ela exige a
+aprovação de integração correspondente. Se a fatia for bloqueada durante a
+execução, a reserva é liberada e as worktrees ficam `ABANDONED` para limpeza;
+não as reutilize em uma nova execução.
+Uma integração em andamento fica marcada como `IN_PROGRESS` antes do primeiro
+fast-forward. Em uma retomada, o ledger reconcilia candidatos já integrados;
+uma tentativa concorrente não assume a operação em andamento. Rebase que
+altere o conteúdo validado invalida o GREEN e exige um novo ciclo de validação.
 
 ## Ciclo de execução
 
@@ -226,12 +263,14 @@ classifique como falha comportamental do código.
 
 ## Regras de segurança e fechamento
 
-- Git é consultado por `rtk git`; stage e commit só ocorrem após aprovação e
-  GREEN válido.
+- Git é consultado por `rtk git`; no modo gerenciado, o ledger também usa
+  somente as operações allowlistadas de worktree, rebase, fast-forward e
+  limpeza descritas acima. Ele nunca faz stage nem cria o commit da entrega.
 - Validações executam apenas programas allowlistados, sem shell, dentro do
   repositório registrado, com limite de tempo e saída.
-- O MCP não edita arquivos, não faz stage/commit, não executa shell arbitrário
-  e não chama providers externos.
+- O MCP não edita arquivos-fonte, não faz stage/commit, não executa shell
+  arbitrário e não chama providers externos; as ações gerenciadas limitam-se
+  às operações Git registradas do ciclo de worktree.
 - Não exponha segredos, logs sensíveis ou dados de outro projeto no ledger.
 - Não use o README ou o AGENTS como substituto do `context`.
 

@@ -175,4 +175,40 @@ describe('GitReadAdapter', () => {
       code: 'GIT_COMMAND_FAILED',
     });
   });
+
+  it('lists committed files in the candidate diff', async () => {
+    const calls: string[][] = [];
+    const command: GitCommandPort = {
+      run: async (args) => {
+        calls.push(args);
+        return args.includes('--name-only') ? 'src/b.ts\0src/a.ts\0' : '';
+      },
+    };
+
+    await expect(new GitReadAdapter(command).diffFiles('/workspace/api', 'base', 'candidate'))
+      .resolves.toEqual(['src/a.ts', 'src/b.ts']);
+    expect(calls).toEqual([[
+      'git', 'diff', '--name-only', '-z', '--no-ext-diff', 'base...candidate', '--',
+    ]]);
+  });
+
+  it('treats an already removed worktree as a successful cleanup retry', async () => {
+    let removeAttempted = false;
+    const command: GitCommandPort = {
+      run: async (args) => {
+        if (args.includes('worktree') && args.includes('remove')) {
+          removeAttempted = true;
+          throw new Error('worktree is not registered');
+        }
+        if (args.includes('worktree') && args.includes('list')) {
+          return 'worktree /workspace/other\nHEAD abc\n';
+        }
+        return '';
+      },
+    };
+
+    await expect(new GitReadAdapter(command).removeWorktree('/workspace/api', '/workspace/old'))
+      .resolves.toBeUndefined();
+    expect(removeAttempted).toBe(true);
+  });
 });

@@ -33,11 +33,42 @@ export type WorkflowContextInput = {
     instruction: string;
     allowedEffects: string[];
     forbiddenEffects: string[];
+    executionMode?: string;
     scope?: {
       repositories: Array<{
         repositoryKey: string;
         paths: string[];
       }>;
+    };
+  };
+  dependencies?: Array<{
+    featureKey: string;
+    itemKey: string;
+    title: string;
+    state: string;
+  }>;
+  execution?: {
+    lease?: {
+      id: string;
+      holder: string;
+      expiresAt: string;
+    };
+    workspaces: Array<{
+      repository: string;
+      path: string;
+      branch: string;
+      baseSha: string;
+      targetBaseSha?: string;
+      candidateSha?: string;
+      status: string;
+      cleanupError?: string | null;
+    }>;
+    integrationApproval?: {
+      id: string;
+      actor: string;
+      status: string;
+      candidates: Record<string, string>;
+      targetBases: Record<string, string>;
     };
   };
   baselines: Array<{
@@ -98,8 +129,11 @@ export function buildWorkflowContext(
           instruction: input.authorization.instruction,
           allowedEffects: input.authorization.allowedEffects,
           forbiddenEffects: input.authorization.forbiddenEffects,
+          executionMode: input.authorization.executionMode,
         }
       : undefined,
+    dependencies: input.dependencies,
+    execution: input.execution,
     baselines: input.baselines,
     acceptanceCriteria: [],
     durableDecisions: [],

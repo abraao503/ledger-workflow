@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { fail } from './errors.js';
-import type { GitReadPort, GitSnapshot } from './types.js';
+import type { GitSnapshot, GitWorkspacePort } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +34,7 @@ const defaultCommand: GitCommandPort = {
   },
 };
 
-export class GitReadAdapter implements GitReadPort {
+export class GitReadAdapter implements GitWorkspacePort {
   constructor(private readonly command: GitCommandPort = defaultCommand) {}
 
   async capture(repositoryPath: string): Promise<GitSnapshot> {
@@ -112,6 +114,81 @@ export class GitReadAdapter implements GitReadPort {
         }`,
       );
     }
+  }
+
+  async createWorktree(input: {
+    repositoryPath: string;
+    worktreePath: string;
+    branch: string;
+    sha: string;
+  }): Promise<void> {
+    await mkdir(path.dirname(input.worktreePath), { recursive: true });
+    await this.command.run(
+      ['git', 'worktree', 'add', '-b', input.branch, input.worktreePath, input.sha],
+      input.repositoryPath,
+    );
+  }
+
+  async removeWorktree(repositoryPath: string, worktreePath: string): Promise<void> {
+    try {
+      await this.command.run(['git', 'worktree', 'remove', worktreePath], repositoryPath);
+    } catch (error) {
+      // Cleanup is retryable. Once the worktree has already been removed, a
+      // second attempt should continue with branch cleanup instead of getting
+      // stuck on a stale filesystem path.
+      try {
+        const listed = await this.command.run(
+          ['git', 'worktree', 'list', '--porcelain'],
+          repositoryPath,
+        );
+        const registeredPaths = listed
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('worktree '))
+          .map((line) => path.resolve(line.slice('worktree '.length)));
+        if (!registeredPaths.includes(path.resolve(worktreePath))) {
+          return;
+        }
+      } catch {
+        // Preserve the original removal error when the status check fails.
+      }
+      throw error;
+    }
+  }
+
+  async deleteBranch(repositoryPath: string, branch: string): Promise<void> {
+    try {
+      await this.command.run(['git', 'branch', '-d', branch], repositoryPath);
+    } catch (error) {
+      try {
+        const existing = await this.command.run(['git', 'branch', '--list', branch], repositoryPath);
+        if (!existing.trim()) {
+          return;
+        }
+      } catch {
+        // Preserve the original branch deletion error when the status check fails.
+      }
+      throw error;
+    }
+  }
+
+  async rebaseWorktree(worktreePath: string, targetBranch: string): Promise<void> {
+    await this.command.run(['git', 'rebase', targetBranch], worktreePath);
+  }
+
+  async getHead(repositoryPath: string): Promise<string> {
+    return (await this.command.run(['git', 'rev-parse', 'HEAD'], repositoryPath)).trim();
+  }
+
+  async diffFiles(repositoryPath: string, baseSha: string, candidateSha: string): Promise<string[]> {
+    const output = await this.command.run(
+      ['git', 'diff', '--name-only', '-z', '--no-ext-diff', `${baseSha}...${candidateSha}`, '--'],
+      repositoryPath,
+    );
+    return output.split('\0').filter(Boolean).sort();
+  }
+
+  async fastForward(repositoryPath: string, branch: string): Promise<void> {
+    await this.command.run(['git', 'merge', '--ff-only', branch], repositoryPath);
   }
 }
 

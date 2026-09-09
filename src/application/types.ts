@@ -79,6 +79,7 @@ export type DefineWorkItemInput = {
   tddPolicy?: 'REQUIRED' | 'OPTIONAL' | 'EXEMPT';
   parentItemKey?: string;
   scope?: WorkItemScope;
+  dependsOn?: WorkItemDependencyRef[];
   useCases: UseCaseInput[];
   criteria: AcceptanceCriterionInput[];
   tests: TestSpecificationInput[];
@@ -101,6 +102,7 @@ export type AuthorizeWorkItemInput = {
   allowedEffects: string[];
   forbiddenEffects: string[];
   repositoryKeys: string[];
+  executionMode?: 'SHARED' | 'MANAGED_WORKTREE';
 };
 
 export type GitSnapshot = {
@@ -114,6 +116,21 @@ export type GitSnapshot = {
 
 export type GitReadPort = {
   capture: (repositoryPath: string) => Promise<GitSnapshot>;
+};
+
+export type GitWorkspacePort = GitReadPort & {
+  createWorktree: (input: {
+    repositoryPath: string;
+    worktreePath: string;
+    branch: string;
+    sha: string;
+  }) => Promise<void>;
+  removeWorktree: (repositoryPath: string, worktreePath: string) => Promise<void>;
+  deleteBranch: (repositoryPath: string, branch: string) => Promise<void>;
+  rebaseWorktree: (worktreePath: string, targetBranch: string) => Promise<void>;
+  getHead: (repositoryPath: string) => Promise<string>;
+  diffFiles: (repositoryPath: string, baseSha: string, candidateSha: string) => Promise<string[]>;
+  fastForward: (repositoryPath: string, branch: string) => Promise<void>;
 };
 
 export type CreateValidationProfileInput = {
@@ -217,6 +234,7 @@ export type TransitionWorkItemInput = {
   to: string;
   reason?: string;
   commitSha?: string;
+  integrationApprovalId?: string;
 };
 
 export type ReopenWorkItemInput = {
@@ -244,6 +262,47 @@ export type ClaimWorkItemInput = {
 };
 
 export type RecoverWorkItemLeaseInput = ClaimWorkItemInput;
+
+export type WorkItemDependencyRef = {
+  featureKey: string;
+  itemKey: string;
+};
+
+export type AddWorkItemDependencyInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  dependsOn: WorkItemDependencyRef;
+};
+
+export type RemoveWorkItemDependencyInput = AddWorkItemDependencyInput;
+
+export type PrepareIntegrationInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+};
+
+export type AuthorizeIntegrationInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  actor: string;
+  candidates: Record<string, string>;
+  targetBases: Record<string, string>;
+};
+
+export type IntegrateWorkItemInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+};
+
+export type CleanupWorkItemInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+};
 
 export type ContextRequest = {
   projectKey: string;
@@ -385,6 +444,8 @@ export type DashboardCatalogProject = {
 };
 
 export type DashboardActionId =
+  | 'CLAIM'
+  | 'RECOVER'
   | 'MARK_READY'
   | 'AUTHORIZE'
   | 'MARK_TESTS_DEFINED'
@@ -400,6 +461,10 @@ export type DashboardActionId =
   | 'REOPEN'
   | 'INVALIDATE_GREEN'
   | 'RUN_CHECK'
+  | 'PREPARE_INTEGRATION'
+  | 'AUTHORIZE_INTEGRATION'
+  | 'INTEGRATE'
+  | 'CLEANUP_WORKTREES'
   | 'REINSPECT'
   | 'COMPACT_HISTORY'
   | 'PLAN_CHECK'
@@ -504,6 +569,26 @@ export type DashboardSnapshot = {
     expiresAt: string;
     active: boolean;
   } | null;
+  execution?: {
+    mode: string;
+    workspaces: Array<{
+      repository: string;
+      path: string;
+      branch: string;
+      baseSha: string;
+      targetBaseSha?: string | null;
+      candidateSha?: string | null;
+      status: string;
+      cleanupError?: string | null;
+    }>;
+    integrationApproval?: {
+      id: string;
+      actor: string;
+      status: string;
+      candidates: Record<string, string>;
+      targetBases: Record<string, string>;
+    };
+  };
   availableActions: DashboardAction[];
   health: DashboardHealth;
 };

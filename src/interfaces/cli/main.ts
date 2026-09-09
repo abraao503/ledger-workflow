@@ -12,7 +12,7 @@ try {
   await createCli({ app }).parseAsync(process.argv);
 } catch (error) {
   const message = isWorkflowApplicationError(error)
-    ? `[${error.code}] ${error.message}`
+    ? `[${error.code}] ${error.message}${error.details ? ` ${JSON.stringify(error.details)}` : ''}`
     : error instanceof Error
       ? error.message
       : String(error);

@@ -36,6 +36,7 @@ model Repository {
   project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   validationProfiles ValidationProfile[]
   snapshots        RepositorySnapshot[]
+  workspaces        WorkItemWorkspace[]
   @@unique([projectId, key])
 }
 
@@ -123,6 +124,10 @@ model WorkItem {
   events              WorkflowEvent[]
   summaries           HistorySummary[]
   leases              WorkItemLease[]
+  dependencies        WorkItemDependency[] @relation("WorkItemDependencies")
+  dependedOnBy        WorkItemDependency[] @relation("WorkItemDependents")
+  workspaces          WorkItemWorkspace[]
+  integrationApprovals WorkItemIntegrationApproval[]
   @@unique([featureId, key])
   @@index([featureId, position])
   @@index([parentItemId])
@@ -180,6 +185,7 @@ model Authorization {
   allowedEffectsJson String
   forbiddenEffectsJson String
   actor           String
+  executionMode   String   @default("SHARED")
   createdAt       DateTime @default(now())
   workItem        WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   @@index([workItemId, createdAt])
@@ -210,9 +216,57 @@ model WorkItemLease {
   workItem        WorkItem      @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   recoveredFrom   WorkItemLease? @relation("LeaseRecovery", fields: [recoveredFromId], references: [id], onDelete: SetNull)
   recoveries      WorkItemLease[] @relation("LeaseRecovery")
+  workspaces      WorkItemWorkspace[]
   @@index([workItemId, expiresAt])
   @@index([workItemId, releasedAt])
   @@index([recoveredFromId])
+}
+
+model WorkItemDependency {
+  id              String   @id @default(cuid())
+  workItemId      String
+  dependsOnItemId String
+  createdAt       DateTime @default(now())
+  workItem        WorkItem @relation("WorkItemDependencies", fields: [workItemId], references: [id], onDelete: Cascade)
+  dependsOnItem   WorkItem @relation("WorkItemDependents", fields: [dependsOnItemId], references: [id], onDelete: Cascade)
+  @@unique([workItemId, dependsOnItemId])
+  @@index([workItemId])
+  @@index([dependsOnItemId])
+}
+
+model WorkItemWorkspace {
+  id          String   @id @default(cuid())
+  workItemId  String
+  leaseId     String
+  repositoryId String
+  path        String
+  branch      String
+  baseSha     String
+  targetBaseSha String?
+  candidateSha String?
+  status      String   @default("ACTIVE")
+  cleanupError String?
+  createdAt   DateTime @default(now())
+  removedAt   DateTime?
+  workItem    WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  lease       WorkItemLease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  repository  Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  @@unique([leaseId, repositoryId])
+  @@index([workItemId, status])
+  @@index([repositoryId, status])
+}
+
+model WorkItemIntegrationApproval {
+  id          String   @id @default(cuid())
+  workItemId  String
+  actor       String
+  candidatesJson String
+  targetBasesJson String
+  status      String   @default("AUTHORIZED")
+  createdAt   DateTime @default(now())
+  consumedAt  DateTime?
+  workItem    WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  @@index([workItemId, createdAt])
 }
 
 model ValidationProfile {

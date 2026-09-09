@@ -141,6 +141,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--tdd <policy>', 'REQUIRED|OPTIONAL|EXEMPT')
     .option('--parent <key>', 'fatia original bloqueada pelo replanejamento')
     .option('--scope <json>', 'escopo técnico com repositórios e padrões de caminho')
+    .option('--depends-on <dependency>', 'dependência feature:item (repetível)', collect, [])
     .requiredOption('--use-cases <json>')
     .requiredOption('--criteria <json>')
     .requiredOption('--tests <json>')
@@ -157,6 +158,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         tddPolicy: options.tdd,
         parentItemKey: options.parent,
         scope: options.scope ? parseJson(options.scope, 'scope') : undefined,
+        dependsOn: parseDependencies(options.dependsOn),
         useCases: parseJson(options.useCases, 'use-cases'),
         criteria: parseJson(options.criteria, 'criteria'),
         tests: parseJson(options.tests, 'tests'),
@@ -263,6 +265,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--repositories <keys>', 'chaves separadas por vírgula')
     .option('--allowed <effects>', 'efeitos separados por vírgula', '')
     .option('--forbidden <effects>', 'efeitos separados por vírgula', '')
+    .option('--execution-mode <mode>', 'SHARED|MANAGED_WORKTREE', 'SHARED')
     .action(async (options, command) => {
       emit(command, await app.ledger.authorizeWorkItem({
         projectKey: options.project,
@@ -273,6 +276,115 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         allowedEffects: splitCsv(options.allowed),
         forbiddenEffects: splitCsv(options.forbidden),
         repositoryKeys: splitCsv(options.repositories),
+        executionMode: options.executionMode,
+      }), stdout);
+    });
+
+  const dependency = item.command('dependency').description('Gerencia dependências entre fatias');
+  dependency
+    .command('add')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--depends-on <dependency>', 'feature:item')
+    .action(async (options, command) => {
+      const [featureKey, itemKey] = parseDependency(options.dependsOn);
+      emit(command, await app.ledger.addWorkItemDependency({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        dependsOn: { featureKey, itemKey },
+      }), stdout);
+    });
+
+  dependency
+    .command('remove')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--depends-on <dependency>', 'feature:item')
+    .action(async (options, command) => {
+      const [featureKey, itemKey] = parseDependency(options.dependsOn);
+      emit(command, await app.ledger.removeWorkItemDependency({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        dependsOn: { featureKey, itemKey },
+      }), stdout);
+    });
+
+  dependency
+    .command('list')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listWorkItemDependencies({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+      }), stdout);
+    });
+
+  item
+    .command('prepare-integration')
+    .description('Rebase e registra candidatos exatos para integração')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.prepareIntegration({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+      }), stdout);
+    });
+
+  item
+    .command('authorize-integration')
+    .description('Autoriza integração para SHAs candidatos exatos')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--candidates <json>')
+    .requiredOption('--target-bases <json>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.authorizeIntegration({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        actor: options.actor,
+        candidates: parseJson(options.candidates, 'candidates'),
+        targetBases: parseJson(options.targetBases, 'target-bases'),
+      }), stdout);
+    });
+
+  item
+    .command('integrate')
+    .description('Integra branches gerenciadas por fast-forward e fecha a fatia')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.integrateWorkItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+      }), stdout);
+    });
+
+  item
+    .command('cleanup-worktrees')
+    .description('Tenta remover worktrees e branches gerenciadas sem força')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.cleanupWorkItem({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
       }), stdout);
     });
 
@@ -650,6 +762,28 @@ function parseJson<T>(value: string, field: string): T {
 
 function splitCsv(value: string): string[] {
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function collect(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function parseDependency(value: string): [string, string] {
+  const separator = value.indexOf(':');
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new WorkflowApplicationError(
+      'DEPENDENCY_FORMAT_INVALID',
+      `Dependência inválida: ${value}. Use feature:item.`,
+    );
+  }
+  return [value.slice(0, separator), value.slice(separator + 1)];
+}
+
+function parseDependencies(values: string[]): Array<{ featureKey: string; itemKey: string }> {
+  return values.map((value) => {
+    const [featureKey, itemKey] = parseDependency(value);
+    return { featureKey, itemKey };
+  });
 }
 
 function emit(command: Command, value: unknown, stdout: Output): void {

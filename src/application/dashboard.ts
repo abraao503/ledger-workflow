@@ -200,6 +200,26 @@ export class DashboardService {
       logAvailable: validation.logAvailable ?? (Boolean(validation.logBlob) && (!validation.logExpiresAt || validation.logExpiresAt > now)),
       ...(validation.logExpiresAt ? { logExpiresAt: validation.logExpiresAt.toISOString() } : {}),
     }));
+    const recordAuthorization = record.authorization as { executionMode?: string } | undefined;
+    const executionMode = recordAuthorization?.executionMode ?? 'SHARED';
+    const recordWorkspaces = record.workspaces as Array<{
+      repository: string;
+      path: string;
+      branch: string;
+      baseSha: string;
+      targetBaseSha?: string | null;
+      candidateSha?: string | null;
+      status: string;
+      cleanupError?: string | null;
+    }>;
+    const integrationApprovals = record.integrationApprovals as Array<{
+      id: string;
+      actor: string;
+      status: string;
+      candidates: Record<string, string>;
+      targetBases: Record<string, string>;
+    }>;
+    const latestIntegrationApproval = integrationApprovals[0];
 
     return {
       selection: {
@@ -258,6 +278,11 @@ export class DashboardService {
             active: lease.expiresAt > now,
           }
         : null,
+      execution: {
+        mode: executionMode,
+        workspaces: recordWorkspaces,
+        integrationApproval: latestIntegrationApproval,
+      },
       availableActions: makeActions({
         state: item.state,
         requirementsComplete: item.requirementsComplete,
@@ -265,6 +290,17 @@ export class DashboardService {
         tddPolicy: item.tddPolicy,
         repositoryKeys: repositories.map((repository) => repository.key),
         profileKeys: repositories.flatMap((repository) => repository.validationProfiles.map((profile) => profile.key)),
+        executionMode,
+        hasLease: Boolean(lease && lease.expiresAt > now),
+        hasExpiredLease: Boolean(lease && lease.expiresAt <= now),
+        hasWorkspaces: recordWorkspaces.some((workspace) => workspace.status !== 'REMOVED'),
+        hasActiveWorkspaces: recordWorkspaces.some((workspace) => workspace.status === 'ACTIVE'),
+        hasIntegrationApproval: ['AUTHORIZED', 'IN_PROGRESS'].includes(latestIntegrationApproval?.status ?? ''),
+        hasPreparedCandidates: (() => {
+          const activeWorkspaces = recordWorkspaces.filter((workspace) => workspace.status === 'ACTIVE');
+          return activeWorkspaces.length > 0 && activeWorkspaces.every((workspace) => Boolean(workspace.candidateSha));
+        })(),
+        dependenciesPending: context.dependencies?.some((dependency) => dependency.state !== 'CLOSED') ?? false,
         sizeExceptionPending: (record.pendingItems as Array<{ key: string; resolved?: boolean }>).some(
           (pending) => pending.key === sliceSizeRequestKey(currentFeature.key, item.key) && !pending.resolved,
         ),
@@ -299,6 +335,14 @@ function makeActions(input: {
   tddPolicy: string;
   repositoryKeys: string[];
   profileKeys: string[];
+  executionMode: string;
+  hasLease: boolean;
+  hasExpiredLease: boolean;
+  hasWorkspaces: boolean;
+  hasActiveWorkspaces: boolean;
+  hasIntegrationApproval: boolean;
+  hasPreparedCandidates: boolean;
+  dependenciesPending: boolean;
   sizeExceptionPending: boolean;
 }): DashboardAction[] {
   const validationOptions = {
@@ -316,6 +360,17 @@ function makeActions(input: {
   add({
     id: 'AUTHORIZE', label: 'Autorizar fatia', kind: 'primary',
     enabled: input.state === 'READY',
+  });
+  add({
+    id: 'CLAIM', label: 'Reservar fatia', kind: 'primary',
+    enabled: input.state === 'AUTHORIZED' && !input.hasLease && !input.hasExpiredLease && !input.dependenciesPending,
+    ...(input.state === 'AUTHORIZED' && input.hasLease ? { reason: 'A fatia já possui uma reserva ativa' } : {}),
+    ...(input.state === 'AUTHORIZED' && input.hasExpiredLease ? { reason: 'A reserva expirou; use recuperação para preservar a worktree anterior' } : {}),
+    ...(input.state === 'AUTHORIZED' && input.dependenciesPending ? { reason: 'As dependências ainda não foram fechadas' } : {}),
+  });
+  add({
+    id: 'RECOVER', label: 'Recuperar reserva expirada', kind: 'secondary',
+    enabled: !['CLOSED', 'BLOCKED'].includes(input.state) && input.hasExpiredLease,
   });
   add({
     id: 'MARK_TESTS_DEFINED', label: 'Confirmar testes definidos', kind: 'primary',
@@ -345,6 +400,10 @@ function makeActions(input: {
     enabled: input.state === 'GREEN_CONFIRMED',
   });
   add({
+    id: 'PREPARE_INTEGRATION', label: 'Preparar integração', kind: 'secondary',
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasActiveWorkspaces,
+  });
+  add({
     id: 'INVALIDATE_GREEN', label: 'Invalidar GREEN obsoleto', kind: 'danger',
     enabled: ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(input.state),
     reason: 'Use quando a worktree mudou depois do GREEN',
@@ -359,7 +418,22 @@ function makeActions(input: {
   });
   add({
     id: 'CLOSE', label: 'Selar com commit', kind: 'primary',
-    enabled: input.state === 'APPROVED',
+    enabled: input.state === 'APPROVED' && input.executionMode !== 'MANAGED_WORKTREE',
+    ...(input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE'
+      ? { reason: 'Fatias gerenciadas devem ser integradas com aprovação por SHA' }
+      : {}),
+  });
+  add({
+    id: 'AUTHORIZE_INTEGRATION', label: 'Autorizar integração', kind: 'primary',
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasPreparedCandidates,
+  });
+  add({
+    id: 'INTEGRATE', label: 'Integrar por fast-forward', kind: 'primary',
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasIntegrationApproval,
+  });
+  add({
+    id: 'CLEANUP_WORKTREES', label: 'Limpar worktrees', kind: 'maintenance',
+    enabled: input.hasWorkspaces && ['CLOSED', 'BLOCKED'].includes(input.state),
   });
   add({
     id: 'BLOCK', label: 'Bloquear ou justificar', kind: 'danger',

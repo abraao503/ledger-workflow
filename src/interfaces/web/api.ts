@@ -19,9 +19,10 @@ const selectionSchema = z.object({
 
 const actionSchema = z.object({
   action: z.enum([
-    'MARK_READY', 'AUTHORIZE', 'MARK_TESTS_DEFINED', 'RUN_RED',
+    'CLAIM', 'RECOVER', 'MARK_READY', 'AUTHORIZE', 'MARK_TESTS_DEFINED', 'RUN_RED',
     'APPROVE_TDD_EXCEPTION', 'START_IMPLEMENTING', 'RUN_GREEN',
-    'MARK_READY_FOR_REVIEW', 'SUBMIT_REVIEW', 'RETURN_TO_TESTS',
+    'MARK_READY_FOR_REVIEW', 'PREPARE_INTEGRATION', 'AUTHORIZE_INTEGRATION', 'INTEGRATE', 'CLEANUP_WORKTREES',
+    'SUBMIT_REVIEW', 'RETURN_TO_TESTS',
     'CLOSE', 'BLOCK', 'REOPEN', 'INVALIDATE_GREEN', 'RUN_CHECK', 'REINSPECT', 'COMPACT_HISTORY',
     'REQUEST_SIZE_EXCEPTION', 'APPROVE_SIZE', 'REPLAN',
   ]),
@@ -34,10 +35,15 @@ const actionSchema = z.object({
   purpose: z.enum(['RED', 'GREEN', 'CHECK']).optional(),
   reason: z.string().optional(),
   actor: z.string().optional(),
+  holder: z.string().optional(),
   instruction: z.string().optional(),
   allowedEffects: z.array(z.string()).optional(),
   forbiddenEffects: z.array(z.string()).optional(),
   repositoryKeys: z.array(z.string()).optional(),
+  executionMode: z.enum(['SHARED', 'MANAGED_WORKTREE']).optional(),
+  candidates: z.record(z.string()).optional(),
+  targetBases: z.record(z.string()).optional(),
+  durationSeconds: z.number().int().positive().max(86_400).optional(),
   reviewer: z.string().optional(),
   reviewMode: z.enum(['SELF', 'INDEPENDENT']).optional(),
   verdict: z.enum(['APPROVED', 'CHANGES_REQUIRED', 'BLOCKED']).optional(),
@@ -147,6 +153,18 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
   });
 
   switch (input.action) {
+    case 'CLAIM':
+      return app.ledger.claimWorkItem({
+        ...selection,
+        holder: requireField(input.holder ?? input.actor, 'holder'),
+        durationSeconds: input.durationSeconds,
+      });
+    case 'RECOVER':
+      return app.ledger.recoverWorkItemLease({
+        ...selection,
+        holder: requireField(input.holder ?? input.actor, 'holder'),
+        durationSeconds: input.durationSeconds,
+      });
     case 'MARK_READY': return transition('READY');
     case 'AUTHORIZE':
       return app.ledger.authorizeWorkItem({
@@ -156,7 +174,19 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
         allowedEffects: input.allowedEffects ?? [],
         forbiddenEffects: input.forbiddenEffects ?? [],
         repositoryKeys: input.repositoryKeys ?? [],
+        executionMode: input.executionMode,
       });
+    case 'PREPARE_INTEGRATION':
+      return app.ledger.prepareIntegration(selection);
+    case 'AUTHORIZE_INTEGRATION':
+      return app.ledger.authorizeIntegration({
+        ...selection,
+        actor: requireField(input.actor, 'actor'),
+        candidates: input.candidates ?? {},
+        targetBases: input.targetBases ?? {},
+      });
+    case 'INTEGRATE': return app.ledger.integrateWorkItem(selection);
+    case 'CLEANUP_WORKTREES': return app.ledger.cleanupWorkItem(selection);
     case 'MARK_TESTS_DEFINED': return transition('TESTS_DEFINED');
     case 'RUN_RED':
     case 'RUN_GREEN':
@@ -289,7 +319,11 @@ export function webErrorHandler(error: unknown, _request: Request, response: Res
       : error.code.includes('NOT_FOUND')
         ? 404
         : 422;
-    response.status(status).json({ code: error.code, message: error.message });
+    response.status(status).json({
+      code: error.code,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    });
     return;
   }
 

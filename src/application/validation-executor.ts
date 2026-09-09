@@ -137,7 +137,12 @@ export class ValidationExecutor {
 
     assertPurposeState(input.purpose, currentItem.state);
 
-    const repositoryPath = path.resolve(currentRepository.path);
+    const repositoryPath = path.resolve(await this.ledger.getExecutionRepositoryPath({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+      itemKey: input.itemKey,
+      repositoryKey: input.repositoryKey,
+    }));
     const workingDirectory = path.resolve(repositoryPath, currentProfile.cwd);
 
     if (!isWithin(repositoryPath, workingDirectory)) {

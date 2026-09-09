@@ -210,6 +210,10 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         summary: z.string().optional(),
         tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).optional(),
         parentItemKey: z.string().optional(),
+        dependsOn: z.array(z.object({
+          featureKey: z.string(),
+          itemKey: z.string(),
+        })).optional(),
         scope: z.object({
           repositories: z.array(z.object({
             repositoryKey: z.string(),
@@ -301,9 +305,106 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         allowedEffects: z.array(z.string()),
         forbiddenEffects: z.array(z.string()),
         repositoryKeys: z.array(z.string()).min(1),
+        executionMode: z.enum(['SHARED', 'MANAGED_WORKTREE']).optional(),
       },
     },
     async (input) => runTool(() => app.ledger.authorizeWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_add_dependency',
+    {
+      description: 'Adiciona uma dependência entre fatias do mesmo projeto, rejeitando ciclos.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        dependsOn: z.object({ featureKey: z.string(), itemKey: z.string() }),
+      },
+    },
+    async (input) => runTool(() => app.ledger.addWorkItemDependency(input)),
+  );
+
+  server.registerTool(
+    'workflow_remove_dependency',
+    {
+      description: 'Remove uma dependência de uma fatia ainda editável.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        dependsOn: z.object({ featureKey: z.string(), itemKey: z.string() }),
+      },
+    },
+    async (input) => runTool(() => app.ledger.removeWorkItemDependency(input)),
+  );
+
+  server.registerTool(
+    'workflow_list_dependencies',
+    {
+      description: 'Lista predecessoras e dependentes de uma fatia.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.listWorkItemDependencies(input)),
+  );
+
+  server.registerTool(
+    'workflow_prepare_integration',
+    {
+      description: 'Rebaseia worktrees gerenciadas e registra candidatos de integração por SHA.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.prepareIntegration(input)),
+  );
+
+  server.registerTool(
+    'workflow_authorize_integration',
+    {
+      description: 'Autoriza integração humana para candidatos e bases exatos.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        actor: z.string(),
+        candidates: z.record(z.string()),
+        targetBases: z.record(z.string()),
+      },
+    },
+    async (input) => runTool(() => app.ledger.authorizeIntegration(input)),
+  );
+
+  server.registerTool(
+    'workflow_integrate_item',
+    {
+      description: 'Integra uma fatia gerenciada por fast-forward após autorização humana.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.integrateWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_cleanup_worktrees',
+    {
+      description: 'Tenta remover worktrees e branches sem usar remoção forçada.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.cleanupWorkItem(input)),
   );
 
   server.registerTool(
@@ -437,7 +538,7 @@ async function runTool(action: () => Promise<unknown>) {
     };
   } catch (error) {
     const message = isWorkflowApplicationError(error)
-      ? `[${error.code}] ${error.message}`
+      ? `[${error.code}] ${error.message}${error.details ? ` ${JSON.stringify(error.details)}` : ''}`
       : error instanceof Error
         ? error.message
         : String(error);

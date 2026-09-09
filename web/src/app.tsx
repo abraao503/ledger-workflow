@@ -22,7 +22,9 @@ type ContextShape = {
     actor?: string;
     allowedEffects: string[];
     forbiddenEffects: string[];
+    executionMode?: string;
   };
+  dependencies?: Array<{ featureKey: string; itemKey: string; title: string; state: string }>;
   acceptanceCriteria?: Array<{ key: string; statement: string }>;
   unresolvedItems?: Array<{ key: string; description: string; blocking: boolean }>;
   requiredChecks?: Array<{ key: string; description: string; status: string }>;
@@ -208,6 +210,17 @@ export function App() {
       const normalized = { ...fields };
       if (modal.action.id === 'AUTHORIZE') {
         normalized.repositoryKeys = String(fields.repositoryKeys ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+      }
+      if (modal.action.id === 'CLAIM' || modal.action.id === 'RECOVER') {
+        normalized.durationSeconds = Number(fields.durationSeconds ?? 900);
+      }
+      if (modal.action.id === 'AUTHORIZE_INTEGRATION') {
+        try {
+          normalized.candidates = JSON.parse(String(fields.candidates ?? '{}')) as Record<string, string>;
+          normalized.targetBases = JSON.parse(String(fields.targetBases ?? '{}')) as Record<string, string>;
+        } catch {
+          throw new Error('Candidatos e bases devem ser JSON válido.');
+        }
       }
       if (modal.action.id === 'COMPACT_HISTORY') {
         normalized.keepRecent = Number(fields.keepRecent ?? 2);
@@ -411,7 +424,9 @@ function NowView(props: {
   const items = currentFeatureItems(props.catalog, dashboard);
   const position = Math.max(1, items.findIndex((item) => item.key === dashboard.item.key) + 1);
   const closed = items.filter((item) => item.state === 'CLOSED').length;
-  const copy = describeNow(dashboard.item.state, context.current?.nextAllowedTransition);
+  const copy = dashboard.item.state === 'APPROVED' && dashboard.execution?.mode === 'MANAGED_WORKTREE'
+    ? { status: 'Aprovada', detail: 'A revisão foi aceita. Prepare os candidatos e obtenha aprovação humana antes do fast-forward.' }
+    : describeNow(dashboard.item.state, context.current?.nextAllowedTransition);
   const auth = context.authorization || record.authorization
     ? {
         instruction: (context.authorization ?? record.authorization)?.instruction ?? '',
@@ -464,6 +479,25 @@ function NowView(props: {
           <div className="auth-card">
             <span className="auth-label">{dashboard.lease.active ? 'Fatia reservada por um agente' : 'Reserva de fatia expirada'}</span>
             <p>{dashboard.lease.holder} · {dashboard.lease.active ? 'até' : 'expirou em'} {formatTime(dashboard.lease.expiresAt)}</p>
+          </div>
+        )}
+        {dashboard.execution?.mode === 'MANAGED_WORKTREE' && (
+          <div className="auth-card">
+            <span className="auth-label">Execução isolada por worktree</span>
+            {dashboard.execution.workspaces.length > 0 ? (
+              <p>{dashboard.execution.workspaces.map((workspace) => `${workspace.repository}: ${workspace.path}`).join(' · ')}</p>
+            ) : (
+              <p>Nenhum worktree ativo. Reserve a fatia para provisionar o ambiente do agente.</p>
+            )}
+            {dashboard.execution.integrationApproval && (
+              <p>Integração: {dashboard.execution.integrationApproval.status.toLowerCase()} por {dashboard.execution.integrationApproval.actor}</p>
+            )}
+          </div>
+        )}
+        {context.dependencies && context.dependencies.length > 0 && (
+          <div className="auth-card">
+            <span className="auth-label">Dependências desta fatia</span>
+            <p>{context.dependencies.map((dependency) => `${dependency.featureKey}:${dependency.itemKey} · ${humanState(dependency.state)}`).join(' · ')}</p>
           </div>
         )}
         {lineage && (lineage.parent || lineage.children.length > 0) && (
@@ -776,12 +810,16 @@ function ActionFields({ action, dashboard, fields, set }: {
   if (action.id === 'RUN_RED' || action.id === 'RUN_GREEN' || action.id === 'RUN_CHECK') {
     return <div className="field-grid">{input('repositoryKey', 'Repositório', action.options?.repositoryKeys?.[0] ?? 'repo')} {input('profileKey', 'Perfil de validação', action.options?.profileKeys?.[0] ?? 'unit')} {action.id === 'RUN_RED' && input('reason', 'Motivo (se RED estrutural)', 'Justificativa opcional', false)}</div>;
   }
+  if (action.id === 'CLAIM' || action.id === 'RECOVER') {
+    return <div className="field-grid">{input('holder', 'Agente', 'agent:codex')}{input('durationSeconds', 'Duração (segundos)', '900')}</div>;
+  }
   if (action.id === 'AUTHORIZE') {
     return (
       <div className="field-grid">
         {input('actor', 'Ator', 'dev-local')}
         {input('instruction', 'Instrução autorizada', 'Implementar somente o escopo da fatia')}
         {input('repositoryKeys', 'Repositórios (separados por vírgula)', dashboard?.repositories.map((repo) => repo.key).join(',') ?? '')}
+        <label className="field">Modo de execução<select value={String(fields.executionMode ?? 'SHARED')} onChange={(event) => set('executionMode', event.target.value)}><option value="SHARED">SHARED · checkout compartilhado</option><option value="MANAGED_WORKTREE">MANAGED_WORKTREE · worktree isolada</option></select></label>
         <label className="field field-wide">Efeitos permitidos<textarea value={String(fields.allowedEffects ?? '')} onChange={(event) => set('allowedEffects', event.target.value.split('\n').filter(Boolean))} placeholder="código local" /></label>
         <label className="field field-wide">Efeitos proibidos<textarea value={String(fields.forbiddenEffects ?? '')} onChange={(event) => set('forbiddenEffects', event.target.value.split('\n').filter(Boolean))} placeholder="provider real" /></label>
       </div>
@@ -796,6 +834,18 @@ function ActionFields({ action, dashboard, fields, set }: {
         <label className="field">Modo<select value={String(fields.reviewMode ?? 'SELF')} onChange={(event) => set('reviewMode', event.target.value)}><option>SELF</option><option>INDEPENDENT</option></select></label>
       </div>
     );
+  }
+  if (action.id === 'AUTHORIZE_INTEGRATION') {
+    return (
+      <div className="field-grid">
+        {input('actor', 'Aprovador humano', 'human:operador')}
+        <label className="field field-wide">Candidatos por repositório (JSON)<textarea required value={String(fields.candidates ?? '{}')} onChange={(event) => set('candidates', event.target.value)} /></label>
+        <label className="field field-wide">Bases alvo por repositório (JSON)<textarea required value={String(fields.targetBases ?? '{}')} onChange={(event) => set('targetBases', event.target.value)} /></label>
+      </div>
+    );
+  }
+  if (action.id === 'PREPARE_INTEGRATION' || action.id === 'INTEGRATE' || action.id === 'CLEANUP_WORKTREES') {
+    return <p className="confirm-copy">Confirmar a operação no ambiente gerenciado desta fatia?</p>;
   }
   if (action.id === 'CLOSE') return <div className="field-grid">{input('commitSha', 'SHA do commit', dashboard?.item.currentSha ?? 'sha-1')}</div>;
   if (action.id === 'REINSPECT') return <div className="field-grid">{input('repositoryKey', 'Repositório', action.options?.repositoryKeys?.[0] ?? 'repo')}</div>;
@@ -964,6 +1014,25 @@ function defaultActionFields(action: DashboardAction, dashboard: DashboardSnapsh
   if (repositoryKey) defaults.repositoryKey = repositoryKey;
   if (profileKey) defaults.profileKey = profileKey;
   if (action.id === 'AUTHORIZE') defaults.repositoryKeys = dashboard?.repositories.map((repository) => repository.key).join(',') ?? '';
+  if (action.id === 'AUTHORIZE') defaults.executionMode = dashboard?.execution?.mode ?? 'SHARED';
+  if (action.id === 'CLAIM' || action.id === 'RECOVER') {
+    defaults.holder = 'agent:codex';
+    defaults.durationSeconds = '900';
+  }
+  if (action.id === 'AUTHORIZE_INTEGRATION') {
+    defaults.actor = 'human:operador';
+    const workspaces = dashboard?.execution?.workspaces ?? [];
+    defaults.candidates = JSON.stringify(
+      Object.fromEntries(workspaces.map((workspace) => [workspace.repository, workspace.candidateSha ?? ''])),
+      null,
+      2,
+    );
+    defaults.targetBases = JSON.stringify(
+      Object.fromEntries(workspaces.map((workspace) => [workspace.repository, workspace.targetBaseSha ?? workspace.baseSha])),
+      null,
+      2,
+    );
+  }
   if (action.id === 'COMPACT_HISTORY') defaults.keepRecent = '2';
   if (action.id === 'SUBMIT_REVIEW') { defaults.verdict = 'APPROVED'; defaults.reviewMode = 'SELF'; }
   if (action.id === 'REQUEST_SIZE_EXCEPTION') defaults.actor = 'agent:codex';
