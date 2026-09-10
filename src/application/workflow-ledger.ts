@@ -523,8 +523,12 @@ export class WorkflowLedger {
       })),
     );
 
-    if (baselines.some(({ snapshot }) => snapshot.dirty)) {
-      fail('DIRTY_BASELINE');
+    const dirtyBaselines = baselines.filter(({ snapshot }) => snapshot.dirty);
+    if (dirtyBaselines.length > 0) {
+      if (executionMode !== 'MANAGED_WORKTREE') {
+        fail('DIRTY_BASELINE');
+      }
+      await this.assertSharedDirtyCoverage(item, dirtyBaselines);
     }
 
     if (baselines.some(({ repository, snapshot }) => (
@@ -592,6 +596,80 @@ export class WorkflowLedger {
 
       return { authorization, item: currentUpdated };
     });
+  }
+
+  private async assertSharedDirtyCoverage(
+    item: WorkItemWithFeature,
+    dirtyEntries: Array<{
+      repository: { id: string; key: string };
+      snapshot: { sha: string; branch: string; changedFiles?: string[] };
+    }>,
+  ): Promise<void> {
+    const inFlightItems = await this.db.workItem.findMany({
+      where: {
+        feature: { projectId: item.feature.projectId },
+        state: {
+          in: [
+            'AUTHORIZED',
+            'TESTS_DEFINED',
+            'RED_CONFIRMED',
+            'TDD_EXCEPTION_APPROVED',
+            'IMPLEMENTING',
+            'GREEN_CONFIRMED',
+            'READY_FOR_REVIEW',
+            'APPROVED',
+            'CHANGES_REQUIRED',
+          ],
+        },
+      },
+      select: { id: true, scopeJson: true },
+    });
+    const inFlightIds = inFlightItems.map((candidate) => candidate.id);
+    const snapshots = inFlightIds.length
+      ? await this.db.repositorySnapshot.findMany({
+          where: { workItemId: { in: inFlightIds } },
+          orderBy: { capturedAt: 'desc' },
+        })
+      : [];
+    const latestByItemAndRepository = new Map<string, (typeof snapshots)[number]>();
+    for (const snapshotRecord of snapshots) {
+      const mapKey = `${snapshotRecord.workItemId}:${snapshotRecord.repositoryId}`;
+      if (!latestByItemAndRepository.has(mapKey)) {
+        latestByItemAndRepository.set(mapKey, snapshotRecord);
+      }
+    }
+
+    for (const { repository, snapshot } of dirtyEntries) {
+      const changedFiles = snapshot.changedFiles ?? [];
+      const uncovered = changedFiles.filter((changedFile) => !inFlightItems.some((candidate) => {
+        const scope = decodeWorkItemScope(candidate.scopeJson);
+        const repositoryScope = scope?.repositories.find(
+          (entry) => entry.repositoryKey === repository.key,
+        );
+        if (!repositoryScope) {
+          return false;
+        }
+        const candidateSnapshot = latestByItemAndRepository.get(`${candidate.id}:${repository.id}`);
+        if (!candidateSnapshot) {
+          return false;
+        }
+        if (candidateSnapshot.sha !== snapshot.sha || candidateSnapshot.branch !== snapshot.branch) {
+          return false;
+        }
+        const allowedPaths = repositoryScope.paths.length ? repositoryScope.paths : [''];
+        return allowedPaths.some((pattern) => scopePathContains(pattern, changedFile));
+      }));
+      if (uncovered.length > 0) {
+        fail(
+          'WORKTREE_BASELINE_DIRTY_UNACCOUNTED',
+          'O checkout compartilhado está sujo com arquivos que nenhuma fatia autorizada em andamento contabiliza.',
+          {
+            repositoryKey: repository.key,
+            changedFiles: uncovered,
+          },
+        );
+      }
+    }
   }
 
   async addWorkItemDependency(input: AddWorkItemDependencyInput) {
@@ -1175,11 +1253,16 @@ export class WorkflowLedger {
       const currentSnapshot = snapshot as NonNullable<typeof snapshot>;
       const current = await this.git.capture(currentSnapshot.repository.path);
       if (
-        current.dirty ||
         current.sha !== currentSnapshot.sha ||
         current.branch !== currentSnapshot.branch
       ) {
         fail('WORKTREE_BASELINE_STALE');
+      }
+      if (current.dirty) {
+        await this.assertSharedDirtyCoverage(item, [{
+          repository: currentSnapshot.repository,
+          snapshot: current,
+        }]);
       }
 
       const repository = currentSnapshot.repository;

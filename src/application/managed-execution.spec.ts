@@ -13,6 +13,7 @@ describe('managed worktree execution', () => {
   let rebaseChangesContent: boolean;
   let rebaseApplied = false;
   let failWorktreeCreation = false;
+  let sharedDirtyFiles: string[] | null = null;
 
   beforeEach(async () => {
     database = createTestDatabase();
@@ -22,12 +23,13 @@ describe('managed worktree execution', () => {
     rebaseChangesContent = false;
     rebaseApplied = false;
     failWorktreeCreation = false;
+    sharedDirtyFiles = null;
     const git: GitWorkspacePort = {
       capture: async (repositoryPath) => ({
         branch: createdWorktrees.find((workspace) => workspace.worktreePath === repositoryPath)?.branch ?? 'master',
         sha: 'sha-1',
-        dirty: false,
-        changedFiles: [],
+        dirty: sharedDirtyFiles !== null,
+        changedFiles: sharedDirtyFiles ?? [],
         fingerprint: 'fingerprint-1',
         contentFingerprint: createdWorktrees.some((workspace) => workspace.worktreePath === repositoryPath) && rebaseApplied
           ? 'content-2'
@@ -140,6 +142,54 @@ describe('managed worktree execution', () => {
       expect.objectContaining({ repositoryId: expect.any(String), baseSha: 'sha-1' }),
     ]);
     await expect(client.workItemWorkspace.count({ where: { workItemId: claimed.item.id } })).resolves.toBe(1);
+  });
+
+  it('authorizes a managed worktree when the shared dirtiness belongs to an authorized in-flight slice', async () => {
+    await defineItem('01', 1);
+    sharedDirtyFiles = ['src/application/other.ts'];
+
+    await defineItem('02', 2);
+
+    await expect(client.authorization.count()).resolves.toBe(2);
+    const snapshots = await client.repositorySnapshot.findMany({ orderBy: { capturedAt: 'asc' } });
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1]).toMatchObject({ sha: 'sha-1', dirty: true });
+  });
+
+  it('refuses managed authorization when the shared dirtiness is not accounted by an authorized slice', async () => {
+    await defineItem('01', 1);
+    sharedDirtyFiles = ['src/unknown/path.ts'];
+
+    await expect(defineItem('02', 2)).rejects.toMatchObject({ code: 'WORKTREE_BASELINE_DIRTY_UNACCOUNTED' });
+    await expect(client.authorization.count()).resolves.toBe(1);
+  });
+
+  it('provisions a managed worktree from the documented baseline while the shared checkout is dirty', async () => {
+    await defineItem('01', 1);
+    sharedDirtyFiles = ['src/application/other.ts'];
+
+    const claimed = await ledger.claimWorkItem({
+      projectKey: 'managed',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:one',
+    });
+
+    expect(createdWorktrees[0]).toMatchObject({ sha: 'sha-1' });
+    expect(claimed.workspaces[0]).toMatchObject({ baseSha: 'sha-1' });
+  });
+
+  it('refuses provisioning when the shared dirtiness becomes unaccounted after authorization', async () => {
+    await defineItem('01', 1);
+    sharedDirtyFiles = ['src/unknown/path.ts'];
+
+    await expect(ledger.claimWorkItem({
+      projectKey: 'managed',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:one',
+    })).rejects.toMatchObject({ code: 'WORKTREE_BASELINE_DIRTY_UNACCOUNTED' });
+    expect(createdWorktrees).toHaveLength(0);
   });
 
   it('persists failed provisioning for a later cleanup retry', async () => {
