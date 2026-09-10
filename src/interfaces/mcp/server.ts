@@ -33,6 +33,18 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_ready_frontier',
+    {
+      description: 'Mostra somente folhas não terminais e classifica ação imediata, espera humana, dependência, lease ou bloqueio.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.getReadyFrontier(input)),
+  );
+
+  server.registerTool(
     'workflow_plan_check',
     {
       description: 'Audita a granularidade das fatias de uma feature sem alterar o ledger.',

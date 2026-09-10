@@ -61,6 +61,9 @@ import type {
   RenewWorkItemLeaseInput,
   ReleaseWorkItemLeaseInput,
   ReconcileWorkItemLeasesInput,
+  ReadyFrontierRequest,
+  ReadyFrontierResult,
+  ReadyFrontierItem,
   ReplanWorkItemInput,
   ResolvePendingItemInput,
   RequestSliceSizeExceptionInput,
@@ -3230,6 +3233,136 @@ export class WorkflowLedger {
         })),
       })),
     };
+  }
+
+  async getReadyFrontier(input: ReadyFrontierRequest): Promise<ReadyFrontierResult> {
+    const project = await this.requireProject(input.projectKey);
+    const features = await this.db.feature.findMany({
+      where: {
+        projectId: project.id,
+        ...(input.featureKey ? { key: input.featureKey } : {}),
+      },
+      orderBy: { key: 'asc' },
+      select: {
+        key: true,
+        name: true,
+        items: {
+          orderBy: { position: 'asc' },
+          select: {
+            id: true,
+            key: true,
+            title: true,
+            state: true,
+            parentItemId: true,
+            dependencies: {
+              include: { dependsOnItem: { include: { feature: true } } },
+              orderBy: { createdAt: 'asc' },
+            },
+            leases: {
+              where: { releasedAt: null },
+              orderBy: { generation: 'desc' },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+    const now = new Date();
+
+    const result = await Promise.all(features.map(async (feature) => {
+      const parentIds = new Set(
+        feature.items
+          .map((item) => item.parentItemId)
+          .filter((parentId): parentId is string => Boolean(parentId)),
+      );
+      const items: ReadyFrontierResult['features'][number]['items'] = [];
+
+      for (const item of feature.items) {
+        if (parentIds.has(item.id) || ['CLOSED', 'SUPERSEDED'].includes(item.state)) {
+          continue;
+        }
+
+        const dependencies = item.dependencies.map((dependency) => ({
+          featureKey: dependency.dependsOnItem.feature.key,
+          itemKey: dependency.dependsOnItem.key,
+          state: dependency.dependsOnItem.state,
+        }));
+        const pendingDependencies = [];
+        for (const dependency of item.dependencies) {
+          if (!(await this.isEffectivelyClosed(dependency.dependsOnItemId, this.db))) {
+            pendingDependencies.push(dependency);
+          }
+        }
+        const lease = item.leases[0];
+        const expired = Boolean(lease && lease.expiresAt <= now);
+        const leaseInfo = lease
+          ? {
+              holder: lease.holder,
+              generation: lease.generation,
+              expiresAt: lease.expiresAt.toISOString(),
+              expired,
+            }
+          : undefined;
+        const commandBase = `--project ${project.key} --feature ${feature.key} --item ${item.key}`;
+        let kind: ReadyFrontierItem['kind'];
+        let nextAction: string;
+        let command: string;
+        let recoveryCommand: string | undefined;
+
+        if (item.state === 'BLOCKED') {
+          kind = 'BLOCKED';
+          nextAction = 'Reabrir após registrar uma justificativa humana.';
+          command = `item reopen ${commandBase} --actor human:<identidade> --reason <motivo>`;
+        } else if (pendingDependencies.length) {
+          kind = 'WAITING_DEPENDENCY';
+          nextAction = 'Aguardar o fechamento efetivo das dependências.';
+          command = `workflow frontier --project ${project.key} --feature ${feature.key}`;
+        } else if (item.state === 'DRAFT') {
+          kind = 'WAITING_HUMAN';
+          nextAction = 'Completar e marcar a fatia como READY.';
+          command = `item transition ${commandBase} --to READY`;
+        } else if (item.state === 'READY') {
+          kind = 'WAITING_HUMAN';
+          nextAction = 'Aguardar autorização humana da execução.';
+          command = `item authorize ${commandBase} --actor human:<identidade>`;
+        } else if (item.state === 'AUTHORIZED' && !lease) {
+          kind = 'ACTIONABLE';
+          nextAction = 'Reivindicar a fatia e obter o fence de execução.';
+          command = `item claim ${commandBase} --holder agent:<identidade>`;
+        } else if (expired && lease) {
+          kind = 'LEASE_EXPIRED';
+          nextAction = 'Recuperar a lease expirada antes de continuar.';
+          command = `item recover ${commandBase} --holder agent:<identidade>`;
+          recoveryCommand = `item reconcile ${commandBase}`;
+        } else if (lease) {
+          kind = 'LEASE_ACTIVE';
+          nextAction = `Executar a próxima ação com executionFence ${lease.generation}.`;
+          command = `item renew ${commandBase} --holder ${lease.holder} --fence ${lease.generation}`;
+          recoveryCommand = `item release ${commandBase} --holder ${lease.holder} --fence ${lease.generation}`;
+        } else {
+          kind = 'LEASE_REQUIRED';
+          nextAction = 'Reivindicar a fatia antes de executar qualquer mutação.';
+          command = `item claim ${commandBase} --holder agent:<identidade>`;
+        }
+
+        items.push({
+          featureKey: feature.key,
+          itemKey: item.key,
+          title: item.title,
+          state: item.state,
+          kind,
+          nextAction,
+          command,
+          ...(recoveryCommand ? { recoveryCommand } : {}),
+          dependencies,
+          ...(leaseInfo ? { lease: leaseInfo } : {}),
+        });
+      }
+
+      return { featureKey: feature.key, name: feature.name, items };
+    }));
+
+    return { project: project.key, features: result };
   }
 
   async checkPlan(input: PlanCheckRequest): Promise<PlanCheckResult> {

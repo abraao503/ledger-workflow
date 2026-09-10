@@ -293,6 +293,47 @@ export type ReconcileWorkItemLeasesInput = {
   itemKey?: string;
 };
 
+export type ReadyFrontierRequest = {
+  projectKey: string;
+  featureKey?: string;
+};
+
+export type ReadyFrontierKind =
+  | 'ACTIONABLE'
+  | 'WAITING_HUMAN'
+  | 'WAITING_DEPENDENCY'
+  | 'LEASE_REQUIRED'
+  | 'LEASE_ACTIVE'
+  | 'LEASE_EXPIRED'
+  | 'BLOCKED';
+
+export type ReadyFrontierItem = {
+  featureKey: string;
+  itemKey: string;
+  title: string;
+  state: string;
+  kind: ReadyFrontierKind;
+  nextAction: string;
+  command: string;
+  recoveryCommand?: string;
+  dependencies: Array<{ featureKey: string; itemKey: string; state: string }>;
+  lease?: {
+    holder: string;
+    generation: number;
+    expiresAt: string;
+    expired: boolean;
+  };
+};
+
+export type ReadyFrontierResult = {
+  project: string;
+  features: Array<{
+    featureKey: string;
+    name: string;
+    items: ReadyFrontierItem[];
+  }>;
+};
+
 export type WorkItemDependencyRef = {
   featureKey: string;
   itemKey: string;

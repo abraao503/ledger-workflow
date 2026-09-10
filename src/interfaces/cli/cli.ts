@@ -114,6 +114,18 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       emit(command, await app.ledger.listFeatures(options.project), stdout);
     });
 
+  program
+    .command('frontier')
+    .description('Mostra a fronteira de trabalho acionável e o próximo comando de cada folha')
+    .requiredOption('--project <key>')
+    .option('--feature <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.getReadyFrontier({
+        projectKey: options.project,
+        featureKey: options.feature,
+      }), stdout);
+    });
+
   const plan = program.command('plan').description('Audita a granularidade do planejamento');
   plan
     .command('check')
