@@ -89,7 +89,7 @@ describe('slice replanning', () => {
     await database.close();
   });
 
-  it('blocks the oversized original and attaches a smaller child to it', async () => {
+  it('marks the oversized original as superseded and attaches a smaller child to it', async () => {
     await ledger.requestSliceSizeException({
       projectKey: 'replanning',
       featureKey: 'F1',
@@ -105,7 +105,7 @@ describe('slice replanning', () => {
       actor: 'agent:codex',
       reason: 'Replanejar por resultado primário antes de implementar.',
     });
-    expect(replanned.item.state).toBe('BLOCKED');
+    expect(replanned.item.state).toBe('SUPERSEDED');
     expect(replanned.pending).toMatchObject({ resolved: true });
 
     const child = await ledger.defineWorkItem({
@@ -136,7 +136,7 @@ describe('slice replanning', () => {
       itemKey: '02',
     });
     expect(record.lineage).toEqual({
-      parent: { key: '01', title: 'Fatia grande original', state: 'BLOCKED' },
+      parent: { key: '01', title: 'Fatia grande original', state: 'SUPERSEDED' },
       children: [],
     });
 
@@ -278,7 +278,7 @@ describe('slice replanning', () => {
       actor: 'agent:codex',
       reason: 'Separar reserva e recuperação por resultado primário.',
     });
-    expect(replanned.item.state).toBe('BLOCKED');
+    expect(replanned.item.state).toBe('SUPERSEDED');
 
     const child = await ledger.defineWorkItem({
       projectKey: 'replanning',
@@ -307,6 +307,6 @@ describe('slice replanning', () => {
       featureKey: 'F2',
       itemKey: '02',
     });
-    expect(record.lineage.parent).toMatchObject({ key: '01', state: 'BLOCKED' });
+    expect(record.lineage.parent).toMatchObject({ key: '01', state: 'SUPERSEDED' });
   });
 });

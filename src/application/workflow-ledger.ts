@@ -289,7 +289,9 @@ export class WorkflowLedger {
           },
         });
 
-        if ((parentItem as NonNullable<typeof parentItem>).state !== 'BLOCKED' || !replanEvent) {
+        const parentState = (parentItem as NonNullable<typeof parentItem>).state;
+        const isReplannedParent = parentState === 'SUPERSEDED' || (parentState === 'BLOCKED' && replanEvent);
+        if (!isReplannedParent) {
           fail('PARENT_ITEM_NOT_REPLANNED');
         }
 
@@ -1111,9 +1113,14 @@ export class WorkflowLedger {
   ): Promise<void> {
     const dependencies = await executor.workItemDependency.findMany({
       where: { workItemId: itemId },
-      include: { dependsOnItem: { select: { key: true, state: true, feature: { select: { key: true } } } } },
+      include: { dependsOnItem: { select: { id: true, key: true, state: true, feature: { select: { key: true } } } } },
     });
-    const pending = dependencies.filter((dependency) => dependency.dependsOnItem.state !== 'CLOSED');
+    const pending = [];
+    for (const dependency of dependencies) {
+      if (!(await this.isEffectivelyClosed(dependency.dependsOnItem.id, executor))) {
+        pending.push(dependency);
+      }
+    }
     if (pending.length) {
       fail(
         'WORK_ITEM_DEPENDENCIES_PENDING',
@@ -3288,8 +3295,8 @@ export class WorkflowLedger {
       fail('SLICE_REPLAN_NOT_REQUIRED');
     }
 
-    this.stateMachine.assertTransition('DRAFT', 'BLOCKED', {
-      blockReason: input.reason,
+    this.stateMachine.assertTransition('DRAFT', 'SUPERSEDED', {
+      replanReason: input.reason,
     });
 
     const requestKey = sliceSizeRequestKey(item.feature.key, item.key);
@@ -3310,7 +3317,7 @@ export class WorkflowLedger {
         : pending;
       const updated = await transaction.workItem.update({
         where: { id: item.id },
-        data: { state: 'BLOCKED' },
+        data: { state: 'SUPERSEDED' },
       });
 
       await transaction.workflowEvent.create({
@@ -3331,6 +3338,44 @@ export class WorkflowLedger {
 
       return { assessment, item: updated, pending: resolvedPending };
     });
+  }
+
+  private async isEffectivelyClosed(
+    itemId: string,
+    executor: LedgerExecutor,
+    visited = new Set<string>(),
+  ): Promise<boolean> {
+    if (visited.has(itemId)) {
+      return false;
+    }
+
+    visited.add(itemId);
+    const item = await executor.workItem.findUnique({
+      where: { id: itemId },
+      select: {
+        state: true,
+        childItems: { select: { id: true } },
+      },
+    });
+    if (!item) {
+      return false;
+    }
+
+    if (item.state === 'CLOSED') {
+      return true;
+    }
+
+    if (item.state !== 'SUPERSEDED' || item.childItems.length === 0) {
+      return false;
+    }
+
+    for (const child of item.childItems) {
+      if (!(await this.isEffectivelyClosed(child.id, executor, visited))) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   async listRepositories(projectKey: string) {

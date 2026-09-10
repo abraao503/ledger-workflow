@@ -11,6 +11,7 @@ export const workItemStates = [
   'APPROVED',
   'CHANGES_REQUIRED',
   'BLOCKED',
+  'SUPERSEDED',
   'CLOSED',
 ] as const;
 
@@ -40,6 +41,7 @@ export type TransitionContext = {
   changesRequired?: boolean;
   commitSha?: string;
   blockReason?: string;
+  replanReason?: string;
   sliceSizeStatus?: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
   sliceSizeApproved?: boolean;
 };
@@ -71,6 +73,22 @@ export class WorkflowStateMachine {
   ): void {
     if (from === to) {
       transitionError('NO_STATE_CHANGE');
+    }
+
+    if (from === 'SUPERSEDED') {
+      transitionError('SUPERSEDED_ITEM_IMMUTABLE');
+    }
+
+    if (to === 'SUPERSEDED') {
+      if (from !== 'DRAFT') {
+        transitionError(`INVALID_TRANSITION:${from}:${to}`);
+      }
+
+      if (!context.replanReason?.trim()) {
+        transitionError('REPLAN_REASON_REQUIRED');
+      }
+
+      return;
     }
 
     if (to === 'BLOCKED') {

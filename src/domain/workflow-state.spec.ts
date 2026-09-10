@@ -197,4 +197,10 @@ describe('WorkflowStateMachine', () => {
       blockReason: 'regressão detectada',
     })).toThrow('CLOSED_ITEM_IMMUTABLE');
   });
+
+  it('keeps a superseded item immutable', () => {
+    expect(() => machine.assertTransition('SUPERSEDED', 'DRAFT', {
+      blockReason: 'não deve reabrir',
+    })).toThrow('SUPERSEDED_ITEM_IMMUTABLE');
+  });
 });
