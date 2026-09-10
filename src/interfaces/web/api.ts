@@ -58,6 +58,7 @@ const actionSchema = z.object({
     resolved: z.boolean().optional(),
   })).optional(),
   commitSha: z.string().optional(),
+  executionFence: z.number().int().positive().optional(),
   keepRecent: z.number().int().min(0).max(20).optional(),
 });
 
@@ -150,6 +151,7 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
     to,
     reason: input.reason,
     commitSha: input.commitSha,
+    executionFence: input.executionFence,
   });
 
   switch (input.action) {
@@ -177,15 +179,16 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
         executionMode: input.executionMode,
       });
     case 'PREPARE_INTEGRATION':
-      return app.ledger.prepareIntegration(selection);
+      return app.ledger.prepareIntegration({ ...selection, executionFence: input.executionFence });
     case 'AUTHORIZE_INTEGRATION':
       return app.ledger.authorizeIntegration({
         ...selection,
         actor: requireField(input.actor, 'actor'),
         candidates: input.candidates ?? {},
         targetBases: input.targetBases ?? {},
+        executionFence: input.executionFence,
       });
-    case 'INTEGRATE': return app.ledger.integrateWorkItem(selection);
+    case 'INTEGRATE': return app.ledger.integrateWorkItem({ ...selection, executionFence: input.executionFence });
     case 'CLEANUP_WORKTREES': return app.ledger.cleanupWorkItem(selection);
     case 'MARK_TESTS_DEFINED': return transition('TESTS_DEFINED');
     case 'RUN_RED':
@@ -198,6 +201,7 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
           profileKey: requireField(input.profileKey, 'profileKey'),
           purpose: input.action === 'RUN_RED' ? 'RED' : input.action === 'RUN_GREEN' ? 'GREEN' : 'CHECK',
           reason: input.reason,
+          executionFence: input.executionFence,
         };
         const result = await app.validation.run(validationInput);
         return formatValidationResult(app, validationInput, result);
@@ -213,6 +217,7 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
         verdict: input.verdict ?? 'APPROVED',
         summary: requireField(input.summary, 'summary'),
         findings: input.findings ?? [],
+        executionFence: input.executionFence,
       });
     case 'RETURN_TO_TESTS': return transition('TESTS_DEFINED');
     case 'CLOSE': return transition('CLOSED');
@@ -227,6 +232,7 @@ async function executeAction(app: WorkflowApp, input: z.infer<typeof actionSchem
       return app.ledger.invalidateGreen({
         ...selection,
         reason: requireField(input.reason, 'reason'),
+        executionFence: input.executionFence,
       });
     case 'REQUEST_SIZE_EXCEPTION':
       return app.ledger.requestSliceSizeException({

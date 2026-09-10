@@ -98,6 +98,13 @@ export class ValidationExecutor {
       fail('WORK_ITEM_NOT_FOUND');
     }
 
+    await this.ledger.verifyExecutionFence({
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+      itemKey: input.itemKey,
+      executionFence: input.executionFence,
+    });
+
     const repository = await this.db.repository.findFirst({
       where: {
         projectId: (item as NonNullable<typeof item>).feature.projectId,
@@ -197,6 +204,7 @@ export class ValidationExecutor {
             reusedFromValidationId: reusableGreen.id,
             reusedFromPurpose: 'GREEN',
           },
+          executionFence: input.executionFence,
         });
 
         return {
@@ -267,6 +275,7 @@ export class ValidationExecutor {
         testsTotal: classification.testsTotal,
       },
       log: `${commandResult.stdout}${commandResult.stderr ? `\n${commandResult.stderr}` : ''}`,
+      executionFence: input.executionFence,
     });
 
     let itemState = currentItem.state;
@@ -283,6 +292,7 @@ export class ValidationExecutor {
           itemKey: input.itemKey,
           to: 'RED_CONFIRMED',
           reason: input.reason ?? 'RED comportamental confirmado automaticamente',
+          executionFence: input.executionFence,
         });
         itemState = updated.state;
       }
@@ -296,6 +306,7 @@ export class ValidationExecutor {
           itemKey: input.itemKey,
           to: 'GREEN_CONFIRMED',
           reason: 'GREEN confirmado automaticamente',
+          executionFence: input.executionFence,
         });
         itemState = updated.state;
       } catch (error) {

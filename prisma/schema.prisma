@@ -209,9 +209,12 @@ model WorkItemLease {
   id              String        @id @default(cuid())
   workItemId      String
   holder          String
+  generation      Int           @default(0)
   acquiredAt      DateTime      @default(now())
   expiresAt       DateTime
+  lastRenewedAt   DateTime?
   releasedAt      DateTime?
+  endReason       String?
   recoveredFromId String?
   workItem        WorkItem      @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   recoveredFrom   WorkItemLease? @relation("LeaseRecovery", fields: [recoveredFromId], references: [id], onDelete: SetNull)
@@ -219,6 +222,7 @@ model WorkItemLease {
   workspaces      WorkItemWorkspace[]
   @@index([workItemId, expiresAt])
   @@index([workItemId, releasedAt])
+  @@unique([workItemId, generation])
   @@index([recoveredFromId])
 }
 

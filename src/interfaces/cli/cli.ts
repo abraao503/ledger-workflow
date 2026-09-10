@@ -332,11 +332,13 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--project <key>')
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.prepareIntegration({
         projectKey: options.project,
         featureKey: options.feature,
         itemKey: options.item,
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -349,6 +351,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--actor <actor>')
     .requiredOption('--candidates <json>')
     .requiredOption('--target-bases <json>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.authorizeIntegration({
         projectKey: options.project,
@@ -357,6 +360,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         actor: options.actor,
         candidates: parseJson(options.candidates, 'candidates'),
         targetBases: parseJson(options.targetBases, 'target-bases'),
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -366,11 +370,13 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--project <key>')
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.integrateWorkItem({
         projectKey: options.project,
         featureKey: options.feature,
         itemKey: options.item,
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -396,6 +402,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--to <state>')
     .option('--reason <reason>')
     .option('--commit <sha>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.transitionWorkItem({
         projectKey: options.project,
@@ -404,6 +411,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         to: options.to,
         reason: options.reason,
         commitSha: options.commit,
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -445,12 +453,14 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--feature <key>')
     .requiredOption('--item <key>')
     .requiredOption('--reason <reason>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.invalidateGreen({
         projectKey: options.project,
         featureKey: options.feature,
         itemKey: options.item,
         reason: options.reason,
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -492,6 +502,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--profile <key>')
     .requiredOption('--purpose <purpose>', 'RED|GREEN|CHECK')
     .option('--reason <text>', 'explicação obrigatória para RED estrutural')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       const result = await app.validation.run({
         projectKey: options.project,
@@ -501,6 +512,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         profileKey: options.profile,
         purpose: options.purpose,
         reason: options.reason,
+        executionFence: options.fence,
       });
       emit(command, await formatValidationResult(app, {
         projectKey: options.project,
@@ -510,6 +522,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         profileKey: options.profile,
         purpose: options.purpose,
         reason: options.reason,
+        executionFence: options.fence,
       }, result), stdout);
     });
 
@@ -521,6 +534,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--item <key>')
     .requiredOption('--validation <id>')
     .requiredOption('--reason <reason>')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.confirmStructuralRed({
         projectKey: options.project,
@@ -528,6 +542,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         itemKey: options.item,
         validationId: options.validation,
         reason: options.reason,
+        executionFence: options.fence,
       }), stdout);
     });
 
@@ -581,6 +596,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--verdict <verdict>', 'APPROVED|CHANGES_REQUIRED|BLOCKED')
     .requiredOption('--summary <summary>')
     .option('--findings <json>', 'achados da revisão em JSON', '[]')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
     .action(async (options, command) => {
       emit(command, await app.ledger.submitReview({
         projectKey: options.project,
@@ -591,6 +607,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         verdict: options.verdict,
         summary: options.summary,
         findings: parseJson(options.findings, 'findings'),
+        executionFence: options.fence,
       }), stdout);
     });
 

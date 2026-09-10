@@ -159,6 +159,7 @@ export type RecordValidationInput = {
   durationMs: number;
   summary: Record<string, unknown>;
   log?: string;
+  executionFence?: number;
 };
 
 export type ExecuteValidationInput = {
@@ -169,6 +170,7 @@ export type ExecuteValidationInput = {
   profileKey: string;
   purpose: 'RED' | 'GREEN' | 'CHECK';
   reason?: string;
+  executionFence?: number;
 };
 
 export type ConfirmStructuralRedInput = {
@@ -177,6 +179,7 @@ export type ConfirmStructuralRedInput = {
   itemKey: string;
   validationId: string;
   reason: string;
+  executionFence?: number;
 };
 
 export type InvalidateGreenInput = {
@@ -184,6 +187,7 @@ export type InvalidateGreenInput = {
   featureKey: string;
   itemKey: string;
   reason: string;
+  executionFence?: number;
 };
 
 export type CommandRequest = {
@@ -225,6 +229,7 @@ export type SubmitReviewInput = {
   verdict: 'APPROVED' | 'CHANGES_REQUIRED' | 'BLOCKED';
   summary: string;
   findings: ReviewFindingInput[];
+  executionFence?: number;
 };
 
 export type TransitionWorkItemInput = {
@@ -235,6 +240,7 @@ export type TransitionWorkItemInput = {
   reason?: string;
   commitSha?: string;
   integrationApprovalId?: string;
+  executionFence?: number;
 };
 
 export type ReopenWorkItemInput = {
@@ -281,6 +287,7 @@ export type PrepareIntegrationInput = {
   projectKey: string;
   featureKey: string;
   itemKey: string;
+  executionFence?: number;
 };
 
 export type AuthorizeIntegrationInput = {
@@ -290,12 +297,14 @@ export type AuthorizeIntegrationInput = {
   actor: string;
   candidates: Record<string, string>;
   targetBases: Record<string, string>;
+  executionFence?: number;
 };
 
 export type IntegrateWorkItemInput = {
   projectKey: string;
   featureKey: string;
   itemKey: string;
+  executionFence?: number;
 };
 
 export type CleanupWorkItemInput = {

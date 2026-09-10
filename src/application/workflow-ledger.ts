@@ -858,7 +858,18 @@ export class WorkflowLedger {
         where: { id: item.id },
         include: { feature: true },
       });
-      if (!currentItemResult || currentItemResult.state !== 'AUTHORIZED') {
+      const claimableStates = new Set([
+        'AUTHORIZED',
+        'TESTS_DEFINED',
+        'RED_CONFIRMED',
+        'TDD_EXCEPTION_APPROVED',
+        'IMPLEMENTING',
+        'GREEN_CONFIRMED',
+        'READY_FOR_REVIEW',
+        'APPROVED',
+        'CHANGES_REQUIRED',
+      ]);
+      if (!currentItemResult || !claimableStates.has(currentItemResult.state)) {
         fail('SLICE_CLAIM_STATE_INVALID');
       }
       const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
@@ -899,12 +910,20 @@ export class WorkflowLedger {
         fail('SLICE_ALREADY_RESERVED');
       }
 
+      const latestLease = await transaction.workItemLease.findFirst({
+        where: { workItemId: currentItem.id },
+        orderBy: { generation: 'desc' },
+        select: { generation: true },
+      });
+      const generation = (latestLease?.generation ?? 0) + 1;
+
       let lease;
       try {
         lease = await transaction.workItemLease.create({
           data: {
             workItemId: currentItem.id,
             holder,
+            generation,
             acquiredAt,
             expiresAt,
           },
@@ -925,6 +944,7 @@ export class WorkflowLedger {
           type: 'SLICE_LEASE_ACQUIRED',
           payloadJson: encodeJson({
             holder,
+            generation,
             acquiredAt,
             expiresAt,
             durationSeconds,
@@ -993,7 +1013,7 @@ export class WorkflowLedger {
         where: { id: item.id },
         include: { feature: true },
       });
-      if (!currentItemResult || ['CLOSED', 'BLOCKED'].includes(currentItemResult.state)) {
+      if (!currentItemResult || ['CLOSED', 'BLOCKED', 'SUPERSEDED'].includes(currentItemResult.state)) {
         fail('SLICE_CLAIM_STATE_INVALID');
       }
       const currentItem = currentItemResult as NonNullable<typeof currentItemResult>;
@@ -1046,6 +1066,7 @@ export class WorkflowLedger {
         data: {
           workItemId: currentItem.id,
           holder,
+          generation: (activeLease as NonNullable<typeof activeLease>).generation + 1,
           acquiredAt,
           expiresAt,
           recoveredFromId: previousLease.id,
@@ -1062,6 +1083,7 @@ export class WorkflowLedger {
             previousLeaseId: previousLease.id,
             previousHolder: previousLease.holder,
             holder,
+            generation: lease.generation,
             acquiredAt,
             expiresAt,
             durationSeconds,
@@ -1136,6 +1158,48 @@ export class WorkflowLedger {
         },
       );
     }
+  }
+
+  async verifyExecutionFence(input: {
+    projectKey: string;
+    featureKey: string;
+    itemKey: string;
+    executionFence?: number;
+  }) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    return this.requireActiveExecutionFence(item.id, input.executionFence);
+  }
+
+  private async requireActiveExecutionFence(
+    itemId: string,
+    executionFence: number | undefined,
+    executor: LedgerExecutor = this.db,
+  ) {
+    if (!Number.isInteger(executionFence) || (executionFence as number) < 1) {
+      fail('SLICE_EXECUTION_FENCE_REQUIRED');
+    }
+
+    const lease = await executor.workItemLease.findFirst({
+      where: { workItemId: itemId, releasedAt: null },
+      orderBy: { generation: 'desc' },
+    });
+    if (!lease) {
+      fail('SLICE_CLAIM_REQUIRED');
+    }
+
+    const currentLease = lease as NonNullable<typeof lease>;
+    if (currentLease.generation !== executionFence) {
+      fail('SLICE_FENCE_STALE', 'A geração da execução não é mais a vigente.', {
+        expectedFence: currentLease.generation,
+        receivedFence: executionFence,
+      });
+    }
+
+    if (currentLease.expiresAt <= new Date()) {
+      fail('SLICE_LEASE_EXPIRED');
+    }
+
+    return currentLease;
   }
 
   private async assertScopeAvailable(
@@ -1392,11 +1456,12 @@ export class WorkflowLedger {
 
   async prepareIntegration(input: PrepareIntegrationInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
     if (item.state !== 'APPROVED') {
       fail('INTEGRATION_PREPARE_STATE_INVALID');
     }
     const authorization = await this.requireManagedAuthorization(item.id);
-    const lease = await this.requireActiveLease(item.id);
+    const lease = await this.requireActiveExecutionFence(item.id, input.executionFence);
     const scope = decodeWorkItemScope(item.scopeJson);
     if (!scope) {
       fail('WORKTREE_SCOPE_REQUIRED');
@@ -1503,6 +1568,8 @@ export class WorkflowLedger {
     }
 
     const result = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
       await transaction.workItemIntegrationApproval.updateMany({
         where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
         data: { status: 'INVALIDATED' },
@@ -1529,6 +1596,7 @@ export class WorkflowLedger {
 
   async authorizeIntegration(input: AuthorizeIntegrationInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
     if (item.state !== 'APPROVED') {
       fail('INTEGRATION_APPROVAL_STATE_INVALID');
     }
@@ -1537,7 +1605,7 @@ export class WorkflowLedger {
       fail('INTEGRATION_HUMAN_APPROVAL_REQUIRED');
     }
     await this.requireManagedAuthorization(item.id);
-    const lease = await this.requireActiveLease(item.id);
+    const lease = await this.requireActiveExecutionFence(item.id, input.executionFence);
     const workspaces = await this.db.workItemWorkspace.findMany({
       where: { leaseId: lease.id, status: 'ACTIVE' },
       include: { repository: true },
@@ -1582,6 +1650,8 @@ export class WorkflowLedger {
     }
 
     return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
       await transaction.workItemIntegrationApproval.updateMany({
         where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
         data: { status: 'INVALIDATED' },
@@ -1618,6 +1688,9 @@ export class WorkflowLedger {
     if (!['APPROVED', 'CLOSED'].includes(item.state)) {
       fail('INTEGRATION_STATE_INVALID');
     }
+    if (item.state !== 'CLOSED') {
+      await this.requireActiveExecutionFence(item.id, input.executionFence);
+    }
     await this.requireManagedAuthorization(item.id);
     const approval = await this.db.workItemIntegrationApproval.findFirst({
       where: { workItemId: item.id, status: { in: ['AUTHORIZED', 'IN_PROGRESS'] } },
@@ -1644,7 +1717,7 @@ export class WorkflowLedger {
       return { item, integrated: Object.keys(candidates), cleanup };
     }
 
-    const lease = await this.requireActiveLease(item.id);
+    const lease = await this.requireActiveExecutionFence(item.id, input.executionFence);
     const workspaces = await this.db.workItemWorkspace.findMany({
       where: { leaseId: lease.id, status: 'ACTIVE' },
       include: { repository: true },
@@ -1673,6 +1746,7 @@ export class WorkflowLedger {
           commitSha: progress[0]?.candidateSha,
           integrationApprovalId: currentApproval.id,
           reason: 'Integração fast-forward retomada após checkpoint.',
+          executionFence: input.executionFence,
         });
         await this.consumeIntegrationApproval(item, currentApproval.id, progress.map((entry) => ({
           repositoryKey: entry.repositoryKey,
@@ -1761,6 +1835,7 @@ export class WorkflowLedger {
         commitSha: preflight[0]?.candidateSha,
         integrationApprovalId: currentApproval.id,
         reason: closeReason,
+        executionFence: input.executionFence,
       });
     } catch (error) {
       await this.db.workflowEvent.create({
@@ -2117,6 +2192,7 @@ export class WorkflowLedger {
 
   async recordValidation(input: RecordValidationInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
     const repository = await this.db.repository.findFirst({
       where: { projectId: item.feature.projectId, key: input.repositoryKey },
     });
@@ -2146,20 +2222,24 @@ export class WorkflowLedger {
           .toString('utf8')
       : undefined;
 
-    return this.db.validationRun.create({
-      data: {
-        workItemId: item.id,
-        profileId: (profile as NonNullable<typeof profile>).id,
-        purpose: input.purpose,
-        status: input.status,
-        resultKind: input.resultKind,
-        exitCode: input.exitCode,
-        sha: input.sha,
-        durationMs: input.durationMs,
-        summaryJson: encodeJson(input.summary),
-        logBlob: boundedLog ? gzipSync(boundedLog) : undefined,
-        logExpiresAt: boundedLog ? expires : undefined,
-      },
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      return transaction.validationRun.create({
+        data: {
+          workItemId: item.id,
+          profileId: (profile as NonNullable<typeof profile>).id,
+          purpose: input.purpose,
+          status: input.status,
+          resultKind: input.resultKind,
+          exitCode: input.exitCode,
+          sha: input.sha,
+          durationMs: input.durationMs,
+          summaryJson: encodeJson(input.summary),
+          logBlob: boundedLog ? gzipSync(boundedLog) : undefined,
+          logExpiresAt: boundedLog ? expires : undefined,
+        },
+      });
     });
   }
 
@@ -2169,6 +2249,7 @@ export class WorkflowLedger {
     }
 
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
     if (item.state !== 'TESTS_DEFINED') {
       fail('STRUCTURAL_RED_CONFIRMATION_STATE_INVALID');
     }
@@ -2213,6 +2294,7 @@ export class WorkflowLedger {
       itemKey: input.itemKey,
       to: 'RED_CONFIRMED',
       reason: input.reason.trim(),
+      executionFence: input.executionFence,
     });
   }
 
@@ -2222,6 +2304,7 @@ export class WorkflowLedger {
     }
 
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
     if (!['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(item.state)) {
       fail('GREEN_INVALIDATION_STATE_INVALID');
     }
@@ -2236,6 +2319,8 @@ export class WorkflowLedger {
     }
 
     return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
       const updated = await transaction.workItem.update({
         where: { id: item.id },
         data: { state: 'IMPLEMENTING' },
@@ -2267,6 +2352,7 @@ export class WorkflowLedger {
 
   async submitReview(input: SubmitReviewInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
 
     if (item.state !== 'READY_FOR_REVIEW') {
       fail('REVIEW_STATE_INVALID');
@@ -2293,6 +2379,8 @@ export class WorkflowLedger {
     });
 
     return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
       const review = await transaction.review.create({
         data: {
           workItemId: item.id,
@@ -2354,6 +2442,10 @@ export class WorkflowLedger {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
     const from = item.state as WorkItemState;
     const to = input.to as WorkItemState;
+    const requiresExecutionFence = this.transitionRequiresExecutionFence(from, to);
+    if (requiresExecutionFence) {
+      await this.requireActiveExecutionFence(item.id, input.executionFence);
+    }
     if (to === 'CLOSED') {
       const authorization = await this.db.authorization.findFirst({
         where: { workItemId: item.id },
@@ -2379,6 +2471,9 @@ export class WorkflowLedger {
 
     return this.db.$transaction(async (transaction) => {
       await this.lockProjectForWrite(transaction, item.feature.projectId);
+      if (requiresExecutionFence) {
+        await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      }
       const updateResult = await transaction.workItem.updateMany({
         where: { id: item.id, state: from },
         data: {
@@ -4036,6 +4131,20 @@ export class WorkflowLedger {
     };
 
     return transitions[state];
+  }
+
+  private transitionRequiresExecutionFence(from: WorkItemState, to: WorkItemState): boolean {
+    return (to === 'BLOCKED' && !['DRAFT', 'READY'].includes(from)) ||
+      to === 'TESTS_DEFINED' ||
+      to === 'RED_CONFIRMED' ||
+      to === 'TDD_EXCEPTION_APPROVED' ||
+      to === 'IMPLEMENTING' ||
+      to === 'GREEN_CONFIRMED' ||
+      to === 'READY_FOR_REVIEW' ||
+      to === 'APPROVED' ||
+      to === 'CHANGES_REQUIRED' ||
+      to === 'CLOSED' ||
+      from === 'CHANGES_REQUIRED';
   }
 
   private async requireProject(key: string): Promise<Project> {
