@@ -40,6 +40,7 @@ type RecordShape = {
 };
 
 type Pendency = { key: string; description: string; blocking: boolean; resolved?: boolean };
+type Notice = { tone: 'error' | 'success'; message: string };
 
 const sliceSteps = [
   { key: 'authorize', label: 'Autorização', states: ['DRAFT', 'READY', 'AUTHORIZED'] },
@@ -74,7 +75,7 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [logText, setLogText] = useState<string | null>(null);
   const [logLoading, setLogLoading] = useState(false);
   const [inspection, setInspection] = useState<Record<string, unknown> | null>(null);
@@ -191,6 +192,7 @@ export function App() {
         itemKey: dashboard.selection.itemKey,
         expectedState: dashboard.item.state,
         ...fields,
+        executionFence: dashboard.lease?.generation,
       }),
     });
     const payload = await response.json().catch(() => ({})) as { message?: string; snapshot?: DashboardSnapshot; result?: unknown };
@@ -201,7 +203,7 @@ export function App() {
       const result = payload.result as { snapshot?: Record<string, unknown> };
       setInspection(result.snapshot ?? null);
     }
-    setNotice('Ação registrada no ledger.');
+    setNotice({ tone: 'success', message: 'Ação registrada no ledger.' });
   };
 
   const submitAction = async (fields: Record<string, unknown>) => {
@@ -229,7 +231,7 @@ export function App() {
       setModal(null);
       setLogText(null);
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : 'Ação rejeitada');
+      setNotice({ tone: 'error', message: cause instanceof Error ? cause.message : 'Ação rejeitada' });
     }
   };
 
@@ -311,7 +313,7 @@ export function App() {
       />
       <main className="page-shell">
         {error && <InlineNotice tone="error" message={error} onClose={() => setError(null)} />}
-        {notice && <InlineNotice tone="success" message={notice} onClose={() => setNotice(null)} />}
+        {notice && <InlineNotice tone={notice.tone} message={notice.message} onClose={() => setNotice(null)} />}
         {!dashboard ? (
           <EmptyState title="Nenhuma etapa disponível" detail="Importe um workflow pelo CLI ou MCP para começar a acompanhar." />
         ) : view === 'now' ? (
@@ -478,7 +480,13 @@ function NowView(props: {
         {dashboard.lease && (
           <div className="auth-card">
             <span className="auth-label">{dashboard.lease.active ? 'Fatia reservada por um agente' : 'Reserva de fatia expirada'}</span>
-            <p>{dashboard.lease.holder} · {dashboard.lease.active ? 'até' : 'expirou em'} {formatTime(dashboard.lease.expiresAt)}</p>
+            <p>{dashboard.lease.holder} · fence {dashboard.lease.generation} · {dashboard.lease.active ? 'até' : 'expirou em'} {formatTime(dashboard.lease.expiresAt)}</p>
+          </div>
+        )}
+        {dashboard.frontier && (
+          <div className="auth-card">
+            <span className="auth-label">Próxima ação acionável</span>
+            <p>{dashboard.frontier.nextAction}</p>
           </div>
         )}
         {dashboard.execution?.mode === 'MANAGED_WORKTREE' && (
@@ -616,7 +624,7 @@ function ProjectView(props: {
   const project = props.catalog.find((candidate) => candidate.key === props.dashboard.selection.projectKey);
   const features = sortFeatures(project?.features ?? []);
   const selected = features.find((feature) => feature.key === props.dashboard.feature.key);
-  const items = selected?.items ?? [];
+  const items = leafItems(selected?.items ?? []);
   const openItems = items.filter((item) => item.state !== 'CLOSED').length;
   const inFlight = items.find((item) => item.state !== 'CLOSED' && item.state !== 'DRAFT') ?? items.find((item) => item.state !== 'CLOSED');
 
@@ -631,9 +639,12 @@ function ProjectView(props: {
         <PanelHeader title={props.dashboard.project.name} meta={`${features.length} entregas`} />
         <div className="feature-cards">
           {features.map((feature) => {
-            const total = feature.items.length;
-            const done = feature.items.filter((item) => item.state === 'CLOSED').length;
-            const running = feature.items.some((item) => item.state !== 'CLOSED');
+            const effectiveItems = leafItems(feature.items);
+            const total = feature.executionCounts?.totalLeaves ?? effectiveItems.length;
+            const done = feature.executionCounts?.closedLeaves ?? effectiveItems.filter((item) => item.state === 'CLOSED').length;
+            const running = feature.executionStatus
+              ? feature.executionStatus !== 'COMPLETED'
+              : effectiveItems.some((item) => item.state !== 'CLOSED');
             const selectedFeature = feature.key === props.dashboard.feature.key;
             return (
               <button
@@ -986,21 +997,26 @@ function stateTone(state: string) {
 }
 function currentFeatureItems(catalog: DashboardCatalogProject[], dashboard: DashboardSnapshot) {
   const project = catalog.find((candidate) => candidate.key === dashboard.selection.projectKey);
-  return project?.features.find((feature) => feature.key === dashboard.selection.featureKey)?.items ?? [];
+  return leafItems(project?.features.find((feature) => feature.key === dashboard.selection.featureKey)?.items ?? []);
 }
 function pickActiveFeature(features: DashboardCatalogProject['features']) {
-  return features.find((feature) => feature.items.some((item) => item.state !== 'CLOSED')) ?? features[0];
+  return features.find((feature) => feature.executionStatus === 'OPEN' || leafItems(feature.items).some((item) => item.state !== 'CLOSED')) ?? features[0];
 }
 function pickActiveItem(items: DashboardCatalogItem[]) {
-  return items.find((item) => item.state !== 'CLOSED') ?? items.at(-1);
+  const leaves = leafItems(items);
+  return leaves.find((item) => item.state !== 'CLOSED') ?? leaves.at(-1);
 }
 function sortFeatures(features: DashboardCatalogProject['features']) {
   return [...features].sort((left, right) => {
-    const leftOpen = left.items.some((item) => item.state !== 'CLOSED') ? 0 : 1;
-    const rightOpen = right.items.some((item) => item.state !== 'CLOSED') ? 0 : 1;
+    const leftOpen = (left.executionStatus === 'OPEN' || leafItems(left.items).some((item) => item.state !== 'CLOSED')) ? 0 : 1;
+    const rightOpen = (right.executionStatus === 'OPEN' || leafItems(right.items).some((item) => item.state !== 'CLOSED')) ? 0 : 1;
     if (leftOpen !== rightOpen) return leftOpen - rightOpen;
     return left.key.localeCompare(right.key, undefined, { numeric: true });
   });
+}
+function leafItems(items: DashboardCatalogItem[]) {
+  const parentKeys = new Set(items.map((item) => item.parentItemKey).filter((key): key is string => Boolean(key)));
+  return items.filter((item) => !parentKeys.has(item.key) && item.state !== 'SUPERSEDED');
 }
 function resolvePendencies(dashboard: DashboardSnapshot, context: ContextShape): Pendency[] {
   const recorded = dashboard.pendingItems.filter((item) => !item.resolved);

@@ -9,6 +9,7 @@ import type {
   DashboardHealth,
   DashboardSelection,
   DashboardSnapshot,
+  ReadyFrontierKind,
 } from './types.js';
 import { workItemStates } from '../domain/workflow-state.js';
 
@@ -41,10 +42,19 @@ export class DashboardService {
             key: true,
             name: true,
             status: true,
-            currentPhaseKey: true,
+          currentPhaseKey: true,
           items: {
             orderBy: { position: 'asc' },
-            select: { id: true, parentItemId: true, key: true, title: true, phaseKey: true, state: true, position: true },
+            select: {
+              id: true,
+              parentItemId: true,
+              parentItem: { select: { key: true } },
+              key: true,
+              title: true,
+              phaseKey: true,
+              state: true,
+              position: true,
+            },
           },
           },
         },
@@ -61,7 +71,10 @@ export class DashboardService {
         status: feature.status,
         currentPhaseKey: feature.currentPhaseKey ?? undefined,
         ...deriveFeatureExecution(feature.items),
-        items: feature.items.map(({ id: _id, parentItemId: _parentItemId, ...item }) => item),
+        items: feature.items.map(({ id: _id, parentItemId: _parentItemId, parentItem, ...item }) => ({
+          ...item,
+          ...(parentItem ? { parentItemKey: parentItem.key } : {}),
+        })),
       })),
     }));
   }
@@ -119,9 +132,23 @@ export class DashboardService {
       where: { featureId: currentFeature.id },
       orderBy: { position: 'asc' },
     });
-    const selectedItem = selection.itemKey
-      ? items.find((item) => item.key === selection.itemKey)
-      : items.find((item) => item.state !== 'CLOSED') ?? items.at(-1);
+    const parentIds = new Set(
+      items
+        .map((candidate) => candidate.parentItemId)
+        .filter((parentId): parentId is string => Boolean(parentId)),
+    );
+    const selectableItems = items.filter(
+      (candidate) => !parentIds.has(candidate.id) && candidate.state !== 'SUPERSEDED',
+    );
+    const fallbackItems = selectableItems.length
+      ? selectableItems
+      : items.filter((candidate) => candidate.state !== 'SUPERSEDED');
+    const requestedItem = selection.itemKey
+      ? selectableItems.find((candidate) => candidate.key === selection.itemKey)
+      : undefined;
+    const selectedItem = requestedItem
+      ?? fallbackItems.find((candidate) => candidate.state !== 'CLOSED')
+      ?? fallbackItems.at(-1);
 
     if (!selectedItem) {
       fail('WORK_ITEM_NOT_FOUND');
@@ -138,7 +165,7 @@ export class DashboardService {
       featureKey: currentFeature.key,
       itemKey: item.key,
     });
-    const [repositories, activeFeatures, openItems, allRepositories, health, lease] = await Promise.all([
+    const [repositories, activeFeatures, projectItems, allRepositories, health, lease, readyFrontier] = await Promise.all([
       this.db.repository.findMany({
         where: { projectId: currentProject.id },
         orderBy: { key: 'asc' },
@@ -151,8 +178,9 @@ export class DashboardService {
         },
       }),
       this.db.feature.count({ where: { projectId: currentProject.id, status: 'ACTIVE' } }),
-      this.db.workItem.count({
-        where: { feature: { projectId: currentProject.id }, state: { not: 'CLOSED' } },
+      this.db.workItem.findMany({
+        where: { feature: { projectId: currentProject.id } },
+        select: { id: true, parentItemId: true, state: true },
       }),
       this.db.repository.findMany({
         where: { projectId: currentProject.id },
@@ -170,7 +198,25 @@ export class DashboardService {
         where: { workItemId: item.id, releasedAt: null },
         orderBy: { expiresAt: 'desc' },
       }),
+      this.ledger.getReadyFrontier({
+        projectKey: currentProject.key,
+        featureKey: currentFeature.key,
+      }),
     ]);
+    const projectParentIds = new Set(
+      projectItems
+        .map((candidate) => candidate.parentItemId)
+        .filter((parentId): parentId is string => Boolean(parentId)),
+    );
+    const openItems = projectItems.filter((candidate) => (
+      !projectParentIds.has(candidate.id)
+      && candidate.state !== 'CLOSED'
+      && candidate.state !== 'SUPERSEDED'
+    )).length;
+    const currentExecution = deriveFeatureExecution(items);
+    const frontierItem = readyFrontier.features
+      .flatMap((candidate) => candidate.items)
+      .find((candidate) => candidate.featureKey === currentFeature.key && candidate.itemKey === item.key);
     const cleanRepositories = allRepositories.filter((repository) => repository.snapshots[0]?.dirty === false).length;
     const now = new Date();
     const validations = (record.validations as Array<{
@@ -235,6 +281,7 @@ export class DashboardService {
         name: currentFeature.name,
         summary: currentFeature.summary,
         status: currentFeature.status,
+        ...currentExecution,
       },
       overview: {
         repositories: repositories.length,
@@ -274,6 +321,7 @@ export class DashboardService {
       lease: lease
         ? {
             holder: lease.holder,
+            generation: lease.generation,
             acquiredAt: lease.acquiredAt.toISOString(),
             expiresAt: lease.expiresAt.toISOString(),
             active: lease.expiresAt > now,
@@ -301,11 +349,21 @@ export class DashboardService {
           const activeWorkspaces = recordWorkspaces.filter((workspace) => workspace.status === 'ACTIVE');
           return activeWorkspaces.length > 0 && activeWorkspaces.every((workspace) => Boolean(workspace.candidateSha));
         })(),
-        dependenciesPending: context.dependencies?.some((dependency) => dependency.state !== 'CLOSED') ?? false,
+        frontierKind: frontierItem?.kind,
+        dependenciesPending: frontierItem?.kind === 'WAITING_DEPENDENCY'
+          || (context.dependencies?.some((dependency) => dependency.state !== 'CLOSED') ?? false),
         sizeExceptionPending: (record.pendingItems as Array<{ key: string; resolved?: boolean }>).some(
           (pending) => pending.key === sliceSizeRequestKey(currentFeature.key, item.key) && !pending.resolved,
         ),
       }),
+      frontier: frontierItem
+        ? {
+            kind: frontierItem.kind,
+            nextAction: frontierItem.nextAction,
+            command: frontierItem.command,
+            ...(frontierItem.recoveryCommand ? { recoveryCommand: frontierItem.recoveryCommand } : {}),
+          }
+        : undefined,
       health,
     };
   }
@@ -345,6 +403,7 @@ function makeActions(input: {
   hasPreparedCandidates: boolean;
   dependenciesPending: boolean;
   sizeExceptionPending: boolean;
+  frontierKind?: ReadyFrontierKind;
 }): DashboardAction[] {
   const validationOptions = {
     repositoryKeys: input.repositoryKeys,
@@ -352,6 +411,10 @@ function makeActions(input: {
   };
   const actions: DashboardAction[] = [];
   const add = (action: DashboardAction) => actions.push(action);
+  const activeFence = input.hasLease && (!input.frontierKind || input.frontierKind === 'LEASE_ACTIVE');
+  const actionable = input.frontierKind
+    ? input.frontierKind === 'ACTIONABLE'
+    : input.state === 'AUTHORIZED' && !input.hasLease && !input.hasExpiredLease && !input.dependenciesPending;
 
   add({
     id: 'MARK_READY', label: 'Avançar para READY', kind: 'primary',
@@ -364,73 +427,73 @@ function makeActions(input: {
   });
   add({
     id: 'CLAIM', label: 'Reservar fatia', kind: 'primary',
-    enabled: input.state === 'AUTHORIZED' && !input.hasLease && !input.hasExpiredLease && !input.dependenciesPending,
+    enabled: actionable,
     ...(input.state === 'AUTHORIZED' && input.hasLease ? { reason: 'A fatia já possui uma reserva ativa' } : {}),
     ...(input.state === 'AUTHORIZED' && input.hasExpiredLease ? { reason: 'A reserva expirou; use recuperação para preservar a worktree anterior' } : {}),
     ...(input.state === 'AUTHORIZED' && input.dependenciesPending ? { reason: 'As dependências ainda não foram fechadas' } : {}),
   });
   add({
     id: 'RECOVER', label: 'Recuperar reserva expirada', kind: 'secondary',
-    enabled: !['CLOSED', 'BLOCKED'].includes(input.state) && input.hasExpiredLease,
+    enabled: input.frontierKind ? input.frontierKind === 'LEASE_EXPIRED' : !['CLOSED', 'BLOCKED'].includes(input.state) && input.hasExpiredLease,
   });
   add({
     id: 'MARK_TESTS_DEFINED', label: 'Confirmar testes definidos', kind: 'primary',
-    enabled: input.state === 'AUTHORIZED' && input.testsDefined,
+    enabled: input.state === 'AUTHORIZED' && input.testsDefined && activeFence,
     ...(input.state === 'AUTHORIZED' && !input.testsDefined ? { reason: 'Registre ao menos um teste no CLI/MCP' } : {}),
   });
   add({
     id: 'RUN_RED', label: 'Executar validação RED', kind: 'primary',
-    enabled: input.state === 'TESTS_DEFINED',
+    enabled: input.state === 'TESTS_DEFINED' && activeFence,
     options: validationOptions,
   });
   add({
     id: 'APPROVE_TDD_EXCEPTION', label: 'Justificar exceção TDD', kind: 'secondary',
-    enabled: input.state === 'TESTS_DEFINED' && input.tddPolicy !== 'REQUIRED',
+    enabled: input.state === 'TESTS_DEFINED' && input.tddPolicy !== 'REQUIRED' && activeFence,
   });
   add({
     id: 'START_IMPLEMENTING', label: 'Iniciar implementação', kind: 'primary',
-    enabled: ['RED_CONFIRMED', 'TDD_EXCEPTION_APPROVED'].includes(input.state),
+    enabled: ['RED_CONFIRMED', 'TDD_EXCEPTION_APPROVED'].includes(input.state) && activeFence,
   });
   add({
     id: 'RUN_GREEN', label: 'Executar validação GREEN', kind: 'primary',
-    enabled: input.state === 'IMPLEMENTING',
+    enabled: input.state === 'IMPLEMENTING' && activeFence,
     options: validationOptions,
   });
   add({
     id: 'MARK_READY_FOR_REVIEW', label: 'Enviar para revisão', kind: 'primary',
-    enabled: input.state === 'GREEN_CONFIRMED',
+    enabled: input.state === 'GREEN_CONFIRMED' && activeFence,
   });
   add({
     id: 'PREPARE_INTEGRATION', label: 'Preparar integração', kind: 'secondary',
-    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasActiveWorkspaces,
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasActiveWorkspaces && activeFence,
   });
   add({
     id: 'INVALIDATE_GREEN', label: 'Invalidar GREEN obsoleto', kind: 'danger',
-    enabled: ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(input.state),
+    enabled: ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED'].includes(input.state) && activeFence,
     reason: 'Use quando a worktree mudou depois do GREEN',
   });
   add({
     id: 'SUBMIT_REVIEW', label: 'Registrar revisão', kind: 'primary',
-    enabled: input.state === 'READY_FOR_REVIEW',
+    enabled: input.state === 'READY_FOR_REVIEW' && activeFence,
   });
   add({
     id: 'RETURN_TO_TESTS', label: 'Retornar para testes', kind: 'secondary',
-    enabled: input.state === 'CHANGES_REQUIRED',
+    enabled: input.state === 'CHANGES_REQUIRED' && activeFence,
   });
   add({
     id: 'CLOSE', label: 'Selar com commit', kind: 'primary',
-    enabled: input.state === 'APPROVED' && input.executionMode !== 'MANAGED_WORKTREE',
+    enabled: input.state === 'APPROVED' && input.executionMode !== 'MANAGED_WORKTREE' && activeFence,
     ...(input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE'
       ? { reason: 'Fatias gerenciadas devem ser integradas com aprovação por SHA' }
       : {}),
   });
   add({
     id: 'AUTHORIZE_INTEGRATION', label: 'Autorizar integração', kind: 'primary',
-    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasPreparedCandidates,
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasPreparedCandidates && activeFence,
   });
   add({
     id: 'INTEGRATE', label: 'Integrar por fast-forward', kind: 'primary',
-    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasIntegrationApproval,
+    enabled: input.state === 'APPROVED' && input.executionMode === 'MANAGED_WORKTREE' && input.hasIntegrationApproval && activeFence,
   });
   add({
     id: 'CLEANUP_WORKTREES', label: 'Limpar worktrees', kind: 'maintenance',
@@ -438,7 +501,8 @@ function makeActions(input: {
   });
   add({
     id: 'BLOCK', label: 'Bloquear ou justificar', kind: 'danger',
-    enabled: !['BLOCKED', 'CLOSED'].includes(input.state),
+    enabled: !['BLOCKED', 'CLOSED'].includes(input.state)
+      && (['DRAFT', 'READY'].includes(input.state) || activeFence),
   });
   add({
     id: 'REOPEN', label: 'Reabrir fatia', kind: 'secondary',
@@ -446,7 +510,7 @@ function makeActions(input: {
   });
   add({
     id: 'RUN_CHECK', label: 'Executar CHECK', kind: 'secondary',
-    enabled: input.state !== 'CLOSED',
+    enabled: input.state !== 'CLOSED' && activeFence,
     options: validationOptions,
   });
   add({ id: 'REINSPECT', label: 'Reinspecionar árvore Git', kind: 'maintenance', enabled: true, options: validationOptions });

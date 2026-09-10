@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './app';
@@ -47,7 +47,7 @@ const snapshot = {
       children: [{ key: '03', title: 'Derivada do replanejamento', state: 'DRAFT' }],
     },
   },
-  lease: { holder: 'agent:codex', acquiredAt: '2026-09-07T10:00:00.000Z', expiresAt: '2099-01-01T12:00:00.000Z', active: true },
+  lease: { holder: 'agent:codex', generation: 3, acquiredAt: '2026-09-07T10:00:00.000Z', expiresAt: '2099-01-01T12:00:00.000Z', active: true },
   validations: [],
   pendingItems: [],
   recentSlices: [],
@@ -101,6 +101,7 @@ const catalog = {
 };
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   window.history.replaceState({}, '', '/');
 });
@@ -152,5 +153,55 @@ describe('acompanhamento do workflow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Fechar' }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Auditoria do planejamento' })).toBeNull());
+  });
+
+  it('envia o executionFence vigente ao executar uma ação protegida', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        json: async () => String(url).includes('/catalog') ? catalog : snapshot,
+      };
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Implementar comportamento' })).toBeTruthy());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Executar validação GREEN' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar ação' }));
+
+    await waitFor(() => {
+      const actionCall = calls.find((call) => call.url === '/api/actions');
+      expect(actionCall).toBeTruthy();
+      expect(JSON.parse(String(actionCall?.init?.body))).toMatchObject({ executionFence: 3 });
+    });
+  });
+
+  it('usa contagens de folhas no catálogo e não conta o pai substituído', async () => {
+    const leafCatalog = {
+      projects: [{
+        ...catalog.projects[0],
+        features: [{
+          ...catalog.projects[0].features[0],
+          executionStatus: 'OPEN',
+          executionCounts: { totalLeaves: 2, closedLeaves: 1, openLeaves: 1 },
+          items: [
+            { key: '01', title: 'Pai substituído', phaseKey: 'G1', state: 'SUPERSEDED', position: 1 },
+            { key: '01a', title: 'Derivada fechada', phaseKey: 'G1', state: 'CLOSED', position: 2, parentItemKey: '01' },
+            { key: '02', title: 'Folha aberta', phaseKey: 'G1', state: 'IMPLEMENTING', position: 3 },
+          ],
+        }],
+      }],
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => String(url).includes('/catalog') ? leafCatalog : snapshot,
+    })));
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Implementar comportamento' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Entrega', exact: true }));
+    await waitFor(() => expect(screen.getByText('1/2 etapas')).toBeTruthy());
+    expect(screen.queryByText('Pai substituído')).toBeNull();
   });
 });

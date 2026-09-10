@@ -500,6 +500,7 @@ export type DashboardCatalogItem = {
   phaseKey: string;
   state: string;
   position: number;
+  parentItemKey?: string;
 };
 
 export type FeatureExecutionStatus = 'EMPTY' | 'OPEN' | 'COMPLETED';
@@ -605,7 +606,14 @@ export type DashboardSnapshot = {
     view: string;
   };
   project: { key: string; name: string; rootPath?: string };
-  feature: { key: string; name: string; summary: string; status: string };
+  feature: {
+    key: string;
+    name: string;
+    summary: string;
+    status: string;
+    executionStatus: FeatureExecutionStatus;
+    executionCounts: FeatureExecutionCounts;
+  };
   overview: {
     repositories: number;
     cleanRepositories: number;
@@ -649,10 +657,17 @@ export type DashboardSnapshot = {
   }>;
   lease?: {
     holder: string;
+    generation: number;
     acquiredAt: string;
     expiresAt: string;
     active: boolean;
   } | null;
+  frontier?: {
+    kind: ReadyFrontierKind;
+    nextAction: string;
+    command: string;
+    recoveryCommand?: string;
+  };
   execution?: {
     mode: string;
     workspaces: Array<{
