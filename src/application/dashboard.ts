@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { fail } from './errors.js';
-import { WorkflowLedger, sliceSizeRequestKey } from './workflow-ledger.js';
+import { deriveFeatureExecution, WorkflowLedger, sliceSizeRequestKey } from './workflow-ledger.js';
 import type {
   DashboardAction,
   DashboardCatalogProject,
@@ -42,10 +42,10 @@ export class DashboardService {
             name: true,
             status: true,
             currentPhaseKey: true,
-            items: {
-              orderBy: { position: 'asc' },
-              select: { key: true, title: true, phaseKey: true, state: true, position: true },
-            },
+          items: {
+            orderBy: { position: 'asc' },
+            select: { id: true, parentItemId: true, key: true, title: true, phaseKey: true, state: true, position: true },
+          },
           },
         },
       },
@@ -60,7 +60,8 @@ export class DashboardService {
         name: feature.name,
         status: feature.status,
         currentPhaseKey: feature.currentPhaseKey ?? undefined,
-        items: feature.items,
+        ...deriveFeatureExecution(feature.items),
+        items: feature.items.map(({ id: _id, parentItemId: _parentItemId, ...item }) => item),
       })),
     }));
   }

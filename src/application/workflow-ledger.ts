@@ -72,6 +72,8 @@ import type {
   AuthorizeIntegrationInput,
   IntegrateWorkItemInput,
   CleanupWorkItemInput,
+  FeatureExecutionCounts,
+  FeatureExecutionStatus,
 } from './types.js';
 
 const LOG_RETENTION_DAYS = 7;
@@ -2951,6 +2953,8 @@ export class WorkflowLedger {
         items: {
           orderBy: { position: 'asc' },
           select: {
+            id: true,
+            parentItemId: true,
             key: true,
             title: true,
             phaseKey: true,
@@ -2966,7 +2970,8 @@ export class WorkflowLedger {
       project: project.key,
       features: features.map((feature) => ({
         ...feature,
-        items: feature.items.map((item) => ({
+        ...deriveFeatureExecution(feature.items),
+        items: feature.items.map(({ id: _id, parentItemId: _parentItemId, ...item }) => ({
           ...item,
           parentItemKey: item.parentItem?.key,
         })),
@@ -4338,13 +4343,39 @@ function readSliceSizePolicy(definitionJson: string): SliceSizePolicy {
     maxRequiredCriteria: candidate.maxRequiredCriteria,
     maxTests: candidate.maxTests,
     maxRepositories: candidate.maxRepositories,
-  };
+};
 
   if (Object.values(policy).every((value) => Number.isInteger(value) && (value as number) >= 1)) {
     return policy as SliceSizePolicy;
   }
 
   return { ...DEFAULT_SLICE_SIZE_POLICY };
+}
+
+export function deriveFeatureExecution(
+  items: Array<{ id: string; parentItemId: string | null; state: string }>,
+): { executionStatus: FeatureExecutionStatus; executionCounts: FeatureExecutionCounts } {
+  const parentIds = new Set(
+    items
+      .map((item) => item.parentItemId)
+      .filter((parentId): parentId is string => Boolean(parentId)),
+  );
+  const leaves = items.filter((item) => !parentIds.has(item.id));
+  const closedLeaves = leaves.filter((item) => item.state === 'CLOSED').length;
+  const executionStatus: FeatureExecutionStatus = leaves.length === 0
+    ? 'EMPTY'
+    : closedLeaves === leaves.length
+      ? 'COMPLETED'
+      : 'OPEN';
+
+  return {
+    executionStatus,
+    executionCounts: {
+      totalLeaves: leaves.length,
+      closedLeaves,
+      openLeaves: leaves.length - closedLeaves,
+    },
+  };
 }
 
 function emptyGreenEvidenceContext(): GreenEvidenceContext {

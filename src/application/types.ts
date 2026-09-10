@@ -428,11 +428,21 @@ export type DashboardCatalogItem = {
   position: number;
 };
 
+export type FeatureExecutionStatus = 'EMPTY' | 'OPEN' | 'COMPLETED';
+
+export type FeatureExecutionCounts = {
+  totalLeaves: number;
+  closedLeaves: number;
+  openLeaves: number;
+};
+
 export type DashboardCatalogFeature = {
   key: string;
   name: string;
   status: string;
   currentPhaseKey?: string;
+  executionStatus: FeatureExecutionStatus;
+  executionCounts: FeatureExecutionCounts;
   items: DashboardCatalogItem[];
 };
 
