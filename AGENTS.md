@@ -173,7 +173,20 @@ escopo não é apenas uma trava entre claims.
 
 Quando houver concorrência, reserve a fatia autorizada com `item claim`. Uma
 reserva expirada pode ser recuperada com `item recover`. Não trabalhe em uma
-fatia reservada por outro agente.
+fatia reservada por outro agente. O claim devolve uma geração; transições depois
+de `AUTHORIZED`, validações, revisão e integração precisam enviar
+`executionFence`/`--fence` dessa geração. O ledger rejeita fences ausentes,
+obsoletos ou expirados antes de qualquer mutação protegida.
+
+Renove uma lease ativa com `item renew --holder <holder> --fence <generation>`
+antes do prazo, libere-a com `item release` quando o agente terminar ou parar,
+e use `item reconcile` para encerrar leases expiradas e workspaces órfãs de
+forma idempotente. `item recover` substitui uma lease expirada por uma nova
+geração; nunca reutilize a geração anterior.
+
+Para escolher a próxima fatia, consulte `workflow frontier --project <key>`.
+Ele mostra a fronteira das folhas, dependências e a ação humana ou automática
+esperada, sem contar pais `SUPERSEDED` como trabalho aberto.
 
 Dependências são explícitas e acíclicas. Declare-as em `item define --depends-on
 <feature>:<item>` ou use `item dependency add/remove/list` enquanto a fatia

@@ -111,11 +111,20 @@ describe('WorkflowLedger', () => {
       forbiddenEffects: ['provider real'],
       repositoryKeys: ['api'],
     });
+    const claimed = await ledger.claimWorkItem({
+      projectKey: 'carara',
+      featureKey: 'E6',
+      itemKey: '05',
+      holder: 'agent:test',
+      durationSeconds: 3_600,
+    });
+    const executionFence = claimed.lease.generation;
     await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       to: 'TESTS_DEFINED',
+      executionFence,
     });
 
     const repository = await client.repository.findFirstOrThrow();
@@ -143,18 +152,21 @@ describe('WorkflowLedger', () => {
       durationMs: 100,
       summary: { suites: 1, tests: 1 },
       log: 'expected failing test',
+      executionFence,
     });
     await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       to: 'RED_CONFIRMED',
+      executionFence,
     });
     await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       to: 'IMPLEMENTING',
+      executionFence,
     });
     await ledger.recordValidation({
       projectKey: 'carara',
@@ -169,18 +181,21 @@ describe('WorkflowLedger', () => {
       sha: 'sha-1',
       durationMs: 200,
       summary: { suites: 1, tests: 2, contentFingerprint: 'content-1' },
+      executionFence,
     });
     await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       to: 'GREEN_CONFIRMED',
+      executionFence,
     });
     await ledger.transitionWorkItem({
       projectKey: 'carara',
       featureKey: 'E6',
       itemKey: '05',
       to: 'READY_FOR_REVIEW',
+      executionFence,
     });
     const reviewInput: SubmitReviewInput = {
       projectKey: 'carara',
@@ -191,6 +206,7 @@ describe('WorkflowLedger', () => {
       verdict: 'APPROVED',
       summary: 'Critérios atendidos',
       findings: [],
+      executionFence,
     };
     snapshot = {
       ...snapshot,
@@ -218,6 +234,7 @@ describe('WorkflowLedger', () => {
       itemKey: '05',
       to: 'CLOSED',
       commitSha: 'sha-2',
+      executionFence,
     })).rejects.toMatchObject({ code: 'GREEN_EVIDENCE_STALE' });
     snapshot = {
       ...snapshot,
@@ -231,6 +248,7 @@ describe('WorkflowLedger', () => {
       itemKey: '05',
       to: 'CLOSED',
       commitSha: 'sha-2',
+      executionFence,
     });
 
     expect(closed.state).toBe('CLOSED');
@@ -340,6 +358,23 @@ describe('WorkflowLedger', () => {
     ]);
 
     await ledger.transitionWorkItem({ projectKey: 'studio', featureKey: 'F1', itemKey: '01', to: 'READY' });
+    await ledger.authorizeWorkItem({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+      instruction: 'registrar validação do painel',
+      actor: 'owner',
+      allowedEffects: ['teste local'],
+      forbiddenEffects: ['produção'],
+      repositoryKeys: ['web'],
+    });
+    const studioLease = await ledger.claimWorkItem({
+      projectKey: 'studio',
+      featureKey: 'F1',
+      itemKey: '01',
+      holder: 'agent:test',
+      durationSeconds: 3_600,
+    });
     await ledger.recordValidation({
       projectKey: 'studio',
       featureKey: 'F1',
@@ -353,6 +388,7 @@ describe('WorkflowLedger', () => {
       sha: 'sha-1',
       durationMs: 50,
       summary: { suites: 1 },
+      executionFence: studioLease.lease.generation,
     });
     const validations = await ledger.listValidations({
       projectKey: 'studio',

@@ -27,6 +27,27 @@ describe('WorkflowLedger edge cases', () => {
     const git: GitReadPort = { capture: async () => snapshot };
     ledger = new WorkflowLedger(client, git);
 
+    const transitionWorkItem = ledger.transitionWorkItem.bind(ledger);
+    ledger.transitionWorkItem = (input) => transitionWorkItem({
+      ...input,
+      executionFence: input.executionFence ?? 1,
+    });
+    const recordValidation = ledger.recordValidation.bind(ledger);
+    ledger.recordValidation = (input) => recordValidation({
+      ...input,
+      executionFence: input.executionFence ?? 1,
+    });
+    const submitReview = ledger.submitReview.bind(ledger);
+    ledger.submitReview = (input) => submitReview({
+      ...input,
+      executionFence: input.executionFence ?? 1,
+    });
+    const invalidateGreen = ledger.invalidateGreen.bind(ledger);
+    ledger.invalidateGreen = (input) => invalidateGreen({
+      ...input,
+      executionFence: input.executionFence ?? 1,
+    });
+
     await ledger.createProject({
       key: 'edge',
       name: 'Edge cases',
@@ -116,6 +137,7 @@ describe('WorkflowLedger edge cases', () => {
   });
 
   it('does not allow a review before the item is ready for review', async () => {
+    await authorize('review');
     await expect(ledger.submitReview({
       projectKey: 'edge',
       featureKey: 'F1',
@@ -135,6 +157,7 @@ describe('WorkflowLedger edge cases', () => {
     verdict,
     expectedState,
   ) => {
+    await authorize(itemKey);
     await client.workItem.updateMany({
       where: { key: itemKey, feature: { key: 'F1' } },
       data: { state: 'READY_FOR_REVIEW' },
@@ -352,6 +375,7 @@ describe('WorkflowLedger edge cases', () => {
       repositoryKey: 'api',
       profileKey: 'multi-api',
       purpose: 'GREEN',
+      executionFence: 1,
     })).resolves.toMatchObject({
       itemState: 'IMPLEMENTING',
       actionRequired: 'GREEN_REPOSITORIES_PENDING',
@@ -599,6 +623,15 @@ describe('WorkflowLedger edge cases', () => {
       allowedEffects: ['código local'],
       forbiddenEffects: ['externo'],
       repositoryKeys,
+    }).then(async (authorization) => {
+      await ledger.claimWorkItem({
+        projectKey: 'edge',
+        featureKey: 'F1',
+        itemKey,
+        holder: 'agent:test',
+        durationSeconds: 3_600,
+      });
+      return authorization;
     });
   }
 

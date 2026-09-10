@@ -282,6 +282,7 @@ describe('managed worktree execution', () => {
       itemKey: '01',
       to: 'CLOSED',
       commitSha: 'sha-2',
+      executionFence: claimed.lease.generation,
     })).rejects.toMatchObject({ code: 'INTEGRATION_APPROVAL_REQUIRED' });
   });
 
@@ -300,6 +301,7 @@ describe('managed worktree execution', () => {
       itemKey: '01',
       to: 'BLOCKED',
       reason: 'Bloqueio para revisão do escopo.',
+      executionFence: claimed.lease.generation,
     });
 
     await expect(client.workItemLease.findUnique({ where: { id: claimed.lease.id } }))
@@ -342,6 +344,7 @@ describe('managed worktree execution', () => {
       sha: 'sha-2',
       durationMs: 10,
       summary: { contentFingerprint: 'content-1' },
+      executionFence: claimed.lease.generation,
     });
     await client.review.create({
       data: { workItemId: claimed.item.id, reviewer: 'human:reviewer', verdict: 'APPROVED', summary: 'ok' },
@@ -356,7 +359,7 @@ describe('managed worktree execution', () => {
       },
     });
     await client.workItem.update({ where: { id: claimed.item.id }, data: { state: 'APPROVED' } });
-    const prepared = await ledger.prepareIntegration({ projectKey: 'managed', featureKey: 'F1', itemKey: '01' });
+    const prepared = await ledger.prepareIntegration({ projectKey: 'managed', featureKey: 'F1', itemKey: '01', executionFence: claimed.lease.generation });
     expect(prepared).toMatchObject({ candidates: { app: 'sha-2' }, targetBases: { app: 'sha-1' } });
     const approval = await ledger.authorizeIntegration({
       projectKey: 'managed',
@@ -365,8 +368,9 @@ describe('managed worktree execution', () => {
       actor: 'human:operator',
       candidates: prepared.candidates,
       targetBases: prepared.targetBases,
+      executionFence: claimed.lease.generation,
     });
-    const integrated = await ledger.integrateWorkItem({ projectKey: 'managed', featureKey: 'F1', itemKey: '01' });
+    const integrated = await ledger.integrateWorkItem({ projectKey: 'managed', featureKey: 'F1', itemKey: '01', executionFence: claimed.lease.generation });
 
     expect(integrated.item.state).toBe('CLOSED');
     expect(integrated.integrated).toEqual(['app']);
@@ -390,6 +394,7 @@ describe('managed worktree execution', () => {
       projectKey: 'managed',
       featureKey: 'F1',
       itemKey: '01',
+      executionFence: claimed.lease.generation,
     })).rejects.toMatchObject({
       code: 'WORK_ITEM_SCOPE_VIOLATION',
       details: { repositoryKey: 'app', changedFiles: ['src/other.ts'] },
@@ -412,6 +417,7 @@ describe('managed worktree execution', () => {
       projectKey: 'managed',
       featureKey: 'F1',
       itemKey: '01',
+      executionFence: 1,
     })).rejects.toMatchObject({ code: 'INTEGRATION_GREEN_REVALIDATION_REQUIRED' });
     await expect(client.workItem.findUnique({ where: { id: item.id } }))
       .resolves.toMatchObject({ state: 'IMPLEMENTING' });

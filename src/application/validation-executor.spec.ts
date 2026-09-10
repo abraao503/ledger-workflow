@@ -135,6 +135,7 @@ describe('validation executor', () => {
     let ledger: WorkflowLedger;
     let executor: ValidationExecutor;
     let requests: CommandRequest[];
+    let executionFence = 1;
     let currentFingerprint: string;
     let nextResult: {
       exitCode: number | null;
@@ -232,11 +233,20 @@ describe('validation executor', () => {
         forbiddenEffects: ['produção'],
         repositoryKeys: ['api'],
       });
+      const claimed = await ledger.claimWorkItem({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        holder: 'agent:test',
+        durationSeconds: 3_600,
+      });
+      executionFence = claimed.lease.generation;
       await ledger.transitionWorkItem({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
         to: 'TESTS_DEFINED',
+        executionFence,
       });
       await ledger.createValidationProfile({
         projectKey: 'carara',
@@ -265,12 +275,17 @@ describe('validation executor', () => {
       });
     });
 
+    const runValidation = (input: Parameters<ValidationExecutor['run']>[0]) => executor.run({
+      ...input,
+      executionFence,
+    });
+
     afterAll(async () => {
       await database.close();
     });
 
     it('runs the registered profile through rtk and records RED without raw output in the summary', async () => {
-      const result = await executor.run({
+      const result = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -301,7 +316,7 @@ describe('validation executor', () => {
         timedOut: false,
       };
 
-      const pending = await executor.run({
+      const pending = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -320,6 +335,7 @@ describe('validation executor', () => {
         itemKey: '01',
         validationId: pending.validation.id,
         reason: 'o módulo testado ainda não existe',
+        executionFence,
       });
       expect(confirmed.state).toBe('RED_CONFIRMED');
       expect(requests).toHaveLength(callsBeforeConfirmation);
@@ -337,7 +353,7 @@ describe('validation executor', () => {
         timedOut: false,
       };
 
-      const green = await executor.run({
+      const green = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -351,10 +367,11 @@ describe('validation executor', () => {
         featureKey: 'E6',
         itemKey: '01',
         to: 'READY_FOR_REVIEW',
+        executionFence,
       });
 
       const callsBeforeCheck = requests.length;
-      const check = await executor.run({
+      const check = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -371,7 +388,7 @@ describe('validation executor', () => {
       });
 
       currentFingerprint = 'fingerprint-2';
-      const changedCheck = await executor.run({
+      const changedCheck = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -386,7 +403,7 @@ describe('validation executor', () => {
     it('rejects a purpose that does not match the item state before invoking the runner', async () => {
       const callsBefore = requests.length;
 
-      await expect(executor.run({
+      await expect(runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -404,7 +421,7 @@ describe('validation executor', () => {
       });
       const callsBefore = requests.length;
 
-      await expect(executor.run({
+      await expect(runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -431,7 +448,7 @@ describe('validation executor', () => {
         stderr: 'stderr',
         timedOut: false,
       };
-      const failed = await executor.run({
+      const failed = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -453,7 +470,7 @@ describe('validation executor', () => {
         where: { key: '01', feature: { key: 'E6' } },
         data: { state: 'TESTS_DEFINED' },
       });
-      const timeout = await executor.run({
+      const timeout = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',
@@ -478,7 +495,7 @@ describe('validation executor', () => {
         },
       });
 
-      await expect(executor.run({
+      await expect(runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
         itemKey: '01',

@@ -181,6 +181,38 @@ uma nova chamada reconcilia uma integração já concluída ou exige uma nova
 preparação/autorização. Um rebase que alterar o conteúdo validado invalida o
 GREEN e exige validação e revisão novamente.
 
+### Fronteira acionável e leases protegidas
+
+Use `workflow frontier --project <project-key>` para descobrir somente as folhas
+executáveis. O comando omite pais substituídos (`SUPERSEDED`), expõe dependências
+pendentes e informa se a próxima ação aguarda uma pessoa, uma lease ou uma
+recuperação.
+
+Depois de `item claim`, cada lease recebe uma geração. Toda mutação de execução
+(transições depois de `AUTHORIZED`, validações, revisão e integração) deve levar
+o `executionFence`/`--fence` igual à geração vigente. Um escritor obsoleto é
+rejeitado quando a geração mudou ou expirou; a UI também envia o fence observado
+junto do estado esperado.
+
+O ciclo de uma lease é explícito e idempotente:
+
+```bash
+node dist/interfaces/cli/main.js item renew \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --holder agent:codex --fence <generation>
+node dist/interfaces/cli/main.js item release \
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --holder agent:codex --fence <generation>
+node dist/interfaces/cli/main.js item reconcile \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+`renew` estende a expiração somente para o holder e fence atuais. `release`
+encerra voluntariamente a reserva e abandona worktrees ainda ativas. Quando um
+agente cai ou o prazo passa, `recover` cria a próxima geração; `reconcile`
+encerra leases expiradas e worktrees órfãs sem repetir efeitos. O histórico de
+claim, renew, release, recover e reconcile permanece no ledger.
+
 <details>
 <summary>Estados registrados pelo ledger</summary>
 
