@@ -269,6 +269,30 @@ export type ClaimWorkItemInput = {
 
 export type RecoverWorkItemLeaseInput = ClaimWorkItemInput;
 
+export type RenewWorkItemLeaseInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  holder: string;
+  executionFence?: number;
+  durationSeconds?: number;
+};
+
+export type ReleaseWorkItemLeaseInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  holder: string;
+  executionFence?: number;
+  reason?: string;
+};
+
+export type ReconcileWorkItemLeasesInput = {
+  projectKey: string;
+  featureKey?: string;
+  itemKey?: string;
+};
+
 export type WorkItemDependencyRef = {
   featureKey: string;
   itemKey: string;

@@ -58,6 +58,9 @@ import type {
   RecordRequest,
   RecordValidationInput,
   RecoverWorkItemLeaseInput,
+  RenewWorkItemLeaseInput,
+  ReleaseWorkItemLeaseInput,
+  ReconcileWorkItemLeasesInput,
   ReplanWorkItemInput,
   ResolvePendingItemInput,
   RequestSliceSizeExceptionInput,
@@ -972,7 +975,7 @@ export class WorkflowLedger {
       await this.db.$transaction(async (transaction) => {
         await transaction.workItemLease.update({
           where: { id: claimed.lease.id },
-          data: { releasedAt: new Date() },
+          data: { releasedAt: new Date(), endReason: 'WORKTREE_PROVISION_FAILED' },
         });
         await transaction.workflowEvent.create({
           data: {
@@ -1056,7 +1059,7 @@ export class WorkflowLedger {
 
       const previousLease = await transaction.workItemLease.update({
         where: { id: (activeLease as NonNullable<typeof activeLease>).id },
-        data: { releasedAt: acquiredAt },
+        data: { releasedAt: acquiredAt, endReason: 'RECOVERED' },
       });
       await transaction.workItemWorkspace.updateMany({
         where: { leaseId: previousLease.id, status: { in: ['ACTIVE', 'PROVISIONING'] } },
@@ -1111,7 +1114,7 @@ export class WorkflowLedger {
       await this.db.$transaction(async (transaction) => {
         await transaction.workItemLease.update({
           where: { id: recovered.lease.id },
-          data: { releasedAt: new Date() },
+          data: { releasedAt: new Date(), endReason: 'WORKTREE_PROVISION_FAILED' },
         });
         await transaction.workflowEvent.create({
           data: {
@@ -1129,6 +1132,158 @@ export class WorkflowLedger {
       });
       throw error;
     }
+  }
+
+  async renewWorkItemLease(input: RenewWorkItemLeaseInput) {
+    const holder = input.holder.trim();
+    if (!holder) {
+      fail('SLICE_CLAIM_HOLDER_REQUIRED');
+    }
+
+    const durationSeconds = input.durationSeconds ?? 900;
+    if (!Number.isInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 86_400) {
+      fail('SLICE_CLAIM_DURATION_INVALID');
+    }
+
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const renewedAt = new Date();
+    const expiresAt = new Date(renewedAt.getTime() + durationSeconds * 1_000);
+    const lease = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentLease = await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      if (currentLease.holder !== holder) {
+        fail('SLICE_LEASE_HOLDER_MISMATCH');
+      }
+
+      const renewed = await transaction.workItemLease.updateMany({
+        where: { id: currentLease.id, generation: currentLease.generation, releasedAt: null },
+        data: { expiresAt, lastRenewedAt: renewedAt, endReason: null },
+      });
+      if (renewed.count !== 1) {
+        fail('SLICE_LEASE_CHANGED_CONCURRENTLY');
+      }
+      const updated = await transaction.workItemLease.findUnique({ where: { id: currentLease.id } });
+      if (!updated) {
+        fail('SLICE_CLAIM_REQUIRED');
+      }
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_LEASE_RENEWED',
+          payloadJson: encodeJson({ holder, generation: currentLease.generation, renewedAt, expiresAt, durationSeconds }),
+        },
+      });
+      return updated as NonNullable<typeof updated>;
+    });
+
+    return { lease, item };
+  }
+
+  async releaseWorkItemLease(input: ReleaseWorkItemLeaseInput) {
+    const holder = input.holder.trim();
+    if (!holder) {
+      fail('SLICE_CLAIM_HOLDER_REQUIRED');
+    }
+
+    const reason = input.reason?.trim() || 'EXPLICIT_RELEASE';
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const releasedAt = new Date();
+    const lease = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      const currentLease = await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      if (currentLease.holder !== holder) {
+        fail('SLICE_LEASE_HOLDER_MISMATCH');
+      }
+
+      const released = await transaction.workItemLease.updateMany({
+        where: { id: currentLease.id, generation: currentLease.generation, releasedAt: null },
+        data: { releasedAt, endReason: reason },
+      });
+      if (released.count !== 1) {
+        fail('SLICE_LEASE_CHANGED_CONCURRENTLY');
+      }
+      await transaction.workItemWorkspace.updateMany({
+        where: { leaseId: currentLease.id, status: { in: ['ACTIVE', 'PROVISIONING'] } },
+        data: { status: 'ABANDONED' },
+      });
+      const updated = await transaction.workItemLease.findUnique({ where: { id: currentLease.id } });
+      if (!updated) {
+        fail('SLICE_CLAIM_REQUIRED');
+      }
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'SLICE_LEASE_RELEASED',
+          payloadJson: encodeJson({ holder, generation: currentLease.generation, releasedAt, reason }),
+        },
+      });
+      return updated as NonNullable<typeof updated>;
+    });
+
+    return { lease, item };
+  }
+
+  async reconcileWorkItemLeases(input: ReconcileWorkItemLeasesInput, now = new Date()) {
+    const project = await this.requireProject(input.projectKey);
+    const workItemWhere = {
+      feature: {
+        projectId: project.id,
+        ...(input.featureKey ? { key: input.featureKey } : {}),
+        ...(input.itemKey ? { items: { some: { key: input.itemKey } } } : {}),
+      },
+    };
+    const reconciled = await this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, project.id);
+      const expired = await transaction.workItemLease.findMany({
+        where: { releasedAt: null, expiresAt: { lte: now }, workItem: workItemWhere },
+        include: { workItem: { include: { feature: true } } },
+        orderBy: { expiresAt: 'asc' },
+      });
+      const results: Array<{ leaseId: string; workItemKey: string; featureKey: string; generation: number }> = [];
+
+      for (const lease of expired) {
+        const released = await transaction.workItemLease.updateMany({
+          where: { id: lease.id, releasedAt: null },
+          data: { releasedAt: now, endReason: 'EXPIRED_RECONCILED' },
+        });
+        if (released.count !== 1) {
+          continue;
+        }
+        await transaction.workItemWorkspace.updateMany({
+          where: { leaseId: lease.id, status: { in: ['ACTIVE', 'PROVISIONING'] } },
+          data: { status: 'ABANDONED' },
+        });
+        await transaction.workflowEvent.create({
+          data: {
+            projectId: project.id,
+            featureId: lease.workItem.featureId,
+            workItemId: lease.workItemId,
+            type: 'SLICE_LEASE_RECONCILED',
+            payloadJson: encodeJson({
+              leaseId: lease.id,
+              holder: lease.holder,
+              generation: lease.generation,
+              expiredAt: lease.expiresAt,
+              releasedAt: now,
+            }),
+          },
+        });
+        results.push({
+          leaseId: lease.id,
+          workItemKey: lease.workItem.key,
+          featureKey: lease.workItem.feature.key,
+          generation: lease.generation,
+        });
+      }
+
+      return results;
+    });
+
+    return { reconciled: reconciled.length, leases: reconciled };
   }
 
   private async assertDependenciesClosed(
@@ -2511,7 +2666,10 @@ export class WorkflowLedger {
         }
         const released = await transaction.workItemLease.updateMany({
           where: { workItemId: item.id, releasedAt: null },
-          data: { releasedAt: new Date() },
+          data: {
+            releasedAt: new Date(),
+            endReason: to === 'CLOSED' ? 'ITEM_CLOSED' : 'ITEM_BLOCKED',
+          },
         });
         if (released.count > 0) {
           await transaction.workflowEvent.create({

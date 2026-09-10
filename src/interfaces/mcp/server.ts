@@ -293,6 +293,51 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_renew_item_lease',
+    {
+      description: 'Renova uma lease ativa somente com holder e generation vigentes.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        holder: z.string(),
+        executionFence: z.number().int().positive(),
+        durationSeconds: z.number().int().positive().max(86_400).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.renewWorkItemLease(input)),
+  );
+
+  server.registerTool(
+    'workflow_release_item_lease',
+    {
+      description: 'Libera uma lease ativa somente com holder e generation vigentes.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        holder: z.string(),
+        executionFence: z.number().int().positive(),
+        reason: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.releaseWorkItemLease(input)),
+  );
+
+  server.registerTool(
+    'workflow_reconcile_item_leases',
+    {
+      description: 'Reconcilia leases expiradas e abandona workspaces ativos de forma idempotente.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.reconcileWorkItemLeases(input)),
+  );
+
+  server.registerTool(
     'workflow_authorize',
     {
       description: 'Autoriza uma fatia e captura os baselines Git somente leitura.',

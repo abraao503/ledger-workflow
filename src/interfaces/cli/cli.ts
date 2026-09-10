@@ -202,6 +202,60 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('renew')
+    .description('Renova uma lease ativa com holder e geração vigentes')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--holder <holder>')
+    .requiredOption('--fence <generation>', 'geração vigente da lease', parseNumber)
+    .option('--duration <seconds>', 'novo TTL em segundos', parseNumber)
+    .action(async (options, command) => {
+      emit(command, await app.ledger.renewWorkItemLease({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        holder: options.holder,
+        executionFence: options.fence,
+        durationSeconds: options.duration,
+      }), stdout);
+    });
+
+  item
+    .command('release')
+    .description('Libera uma lease ativa com holder e geração vigentes')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--holder <holder>')
+    .requiredOption('--fence <generation>', 'geração vigente da lease', parseNumber)
+    .option('--reason <reason>', 'motivo da liberação', 'EXPLICIT_RELEASE')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.releaseWorkItemLease({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        holder: options.holder,
+        executionFence: options.fence,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  item
+    .command('reconcile')
+    .description('Reconcilia leases expiradas e abandona workspaces ativos de forma idempotente')
+    .requiredOption('--project <key>')
+    .option('--feature <key>')
+    .option('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.reconcileWorkItemLeases({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+      }), stdout);
+    });
+
+  item
     .command('replan')
     .description('Bloqueia uma fatia grande ou semanticamente inválida para replanejamento')
     .requiredOption('--project <key>')
