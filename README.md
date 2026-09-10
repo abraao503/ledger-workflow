@@ -161,14 +161,21 @@ limpar worktrees e branches sem força:
 
 ```bash
 node dist/interfaces/cli/main.js item prepare-integration \
-  --project <project-key> --feature <feature-key> --item <item-key>
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --fence <generation>
 node dist/interfaces/cli/main.js item authorize-integration \
   --project <project-key> --feature <feature-key> --item <item-key> \
+  --fence <generation> \
   --actor human:operator --candidates '{"api":"<candidate-sha>"}' \
   --target-bases '{"api":"<target-sha>"}'
 node dist/interfaces/cli/main.js item integrate \
-  --project <project-key> --feature <feature-key> --item <item-key>
+  --project <project-key> --feature <feature-key> --item <item-key> \
+  --fence <generation>
 ```
+
+Todos os comandos gerenciados exigem `--fence <generation>` vigente, usando a
+geração devolvida por `item claim` (ou `item recover`). Renove a lease antes de
+ela expirar e repita o comando com a geração atual se a reserva for recuperada.
 
 Se a limpeza falhar, o ledger mantém o registro como `CLEANUP_FAILED` para
 uma tentativa posterior com `item cleanup-worktrees`. O checkout compartilhado
@@ -213,6 +220,14 @@ agente cai ou o prazo passa, `recover` cria a próxima geração; `reconcile`
 encerra leases expiradas e worktrees órfãs sem repetir efeitos. O histórico de
 claim, renew, release, recover e reconcile permanece no ledger.
 
+### Folhas efetivas e estados terminais
+
+`SUPERSEDED` é o estado terminal e imutável de uma fatia-pai substituída por
+descendentes após um replanejamento. Ela permanece no histórico para preservar
+a linhagem, mas não é uma folha executável nem conta como trabalho aberto. A
+fronteira, o dashboard e o progresso da feature consideram somente folhas
+efetivas; consulte `workflow frontier` antes de escolher a próxima ação.
+
 <details>
 <summary>Estados registrados pelo ledger</summary>
 
@@ -230,6 +245,7 @@ claim, renew, release, recover e reconcile permanece no ledger.
 | `APPROVED` | revisão aprovada |
 | `CHANGES_REQUIRED` | revisão exige mudanças |
 | `BLOCKED` | fluxo interrompido com um motivo |
+| `SUPERSEDED` | fatia-pai substituída por descendentes; estado terminal de linhagem |
 | `CLOSED` | commit registrado; estado final |
 
 </details>

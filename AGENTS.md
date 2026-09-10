@@ -105,7 +105,9 @@ No MCP, consulte primeiro `workflow_list_projects`, `workflow_list_features`,
 - **Estado**: situação corrente da fatia. A lista atual inclui
   `DRAFT`, `READY`, `AUTHORIZED`, `TESTS_DEFINED`, `RED_CONFIRMED`,
   `TDD_EXCEPTION_APPROVED`, `IMPLEMENTING`, `GREEN_CONFIRMED`,
-  `READY_FOR_REVIEW`, `APPROVED`, `CHANGES_REQUIRED`, `BLOCKED` e `CLOSED`.
+  `READY_FOR_REVIEW`, `APPROVED`, `CHANGES_REQUIRED`, `BLOCKED`,
+  `SUPERSEDED` e `CLOSED`. `SUPERSEDED` é terminal e imutável para pais
+  substituídos; a fronteira e o dashboard contam apenas folhas efetivas.
 
 Não derive posição ou estado do texto da chave. Uma feature pode permanecer
 `ACTIVE` depois que todas as suas fatias estiverem `CLOSED`.
@@ -203,12 +205,15 @@ forçadamente a worktree de outro agente.
 
 O fluxo de integração gerenciado é deliberadamente controlado:
 
-1. Depois de GREEN e da revisão, execute `item prepare-integration`.
+1. Depois de GREEN e da revisão, execute `item prepare-integration` com o
+   `--fence <generation>` devolvido pelo `item claim` (ou `item recover`).
 2. Um operador humano autoriza os mapas exatos de candidatos e bases com
-   `item authorize-integration` (`human:<identidade>`).
-3. Execute `item integrate`; o ledger revalida checkout limpo, branch e SHA,
-   faz somente `git merge --ff-only`, fecha a fatia e tenta limpar as
-   worktrees.
+   `item authorize-integration` (`human:<identidade>`), também informando o
+   mesmo fence vigente.
+3. Execute `item integrate` com o fence vigente; o ledger revalida checkout
+   limpo, branch e SHA, faz somente `git merge --ff-only`, fecha a fatia e
+   tenta limpar as worktrees. Se a lease for recuperada, todos os três
+   comandos precisam usar a nova geração.
 
 Se a limpeza não for possível, o estado `CLEANUP_FAILED` fica registrado e
 `item cleanup-worktrees` pode ser tentado novamente. Não feche uma fatia

@@ -12,6 +12,9 @@ describe('protocolo documentado do workflow', () => {
       'item renew',
       'item release',
       'item reconcile',
+      '| `SUPERSEDED` |',
+      'Folhas efetivas e estados terminais',
+      'Todos os comandos gerenciados exigem `--fence <generation>`',
     ]) {
       expect(documentation).toContain(term);
     }
