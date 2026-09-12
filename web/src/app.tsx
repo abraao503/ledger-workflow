@@ -8,6 +8,7 @@ import type {
   DashboardCatalogProject,
   DashboardSnapshot,
   DashboardValidation,
+  ExecutionMapResult,
   PlanCheckResult,
 } from '../../../src/application/types.js';
 
@@ -69,6 +70,9 @@ const stateCopy: Record<string, { status: string; detail: string }> = {
 export function App() {
   const [catalog, setCatalog] = useState<DashboardCatalogProject[]>([]);
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null);
+  const [executionMap, setExecutionMap] = useState<ExecutionMapResult | null>(null);
+  const [executionMapLoading, setExecutionMapLoading] = useState(false);
+  const [executionMapError, setExecutionMapError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(() => readSelection());
   const [view, setView] = useState<View>(() => readView());
   const [loading, setLoading] = useState(true);
@@ -82,6 +86,7 @@ export function App() {
   const [planReport, setPlanReport] = useState<PlanCheckResult | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
+  const executionMapRequestRef = useRef<AbortController | null>(null);
 
   const loadCatalog = useCallback(async () => {
     const response = await fetch('/api/catalog', { headers: { Accept: 'application/json' } });
@@ -89,6 +94,32 @@ export function App() {
     const payload = await response.json() as { projects: DashboardCatalogProject[] };
     setCatalog(payload.projects);
     return payload.projects;
+  }, []);
+
+  const loadExecutionMap = useCallback(async (projectKey: string, featureKey: string, silent = false) => {
+    executionMapRequestRef.current?.abort();
+    const controller = new AbortController();
+    executionMapRequestRef.current = controller;
+    if (!silent) setExecutionMapLoading(true);
+    try {
+      const query = new URLSearchParams({ projectKey, featureKey });
+      const response = await fetch(`/api/execution-map?${query.toString()}`, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { message?: string };
+        throw new Error(payload.message ?? 'Não foi possível carregar o mapa de execução');
+      }
+      setExecutionMap(await response.json() as ExecutionMapResult);
+      setExecutionMapError(null);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return;
+      setExecutionMap(null);
+      setExecutionMapError(cause instanceof Error ? cause.message : 'Mapa de execução indisponível');
+    } finally {
+      if (!silent) setExecutionMapLoading(false);
+    }
   }, []);
 
   const loadDashboard = useCallback(async (silent = false) => {
@@ -118,6 +149,7 @@ export function App() {
         itemKey: payload.selection.itemKey,
       });
       writeSelection(payload.selection);
+      void loadExecutionMap(payload.selection.projectKey, payload.selection.featureKey, silent);
       setError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -126,7 +158,7 @@ export function App() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selection.featureKey, selection.itemKey, selection.projectKey, view]);
+  }, [loadExecutionMap, selection.featureKey, selection.itemKey, selection.projectKey, view]);
 
   useEffect(() => {
     void loadCatalog().catch((cause) => setError(cause instanceof Error ? cause.message : 'Erro inesperado'));
@@ -145,6 +177,7 @@ export function App() {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
       requestRef.current?.abort();
+      executionMapRequestRef.current?.abort();
     };
   }, [loadDashboard, modal]);
 
@@ -331,6 +364,9 @@ export function App() {
           <ProjectView
             dashboard={dashboard}
             catalog={catalog}
+            executionMap={executionMap}
+            executionMapLoading={executionMapLoading}
+            executionMapError={executionMapError}
             onFeature={selectFeature}
             onItem={(itemKey) => selectItem(itemKey, true)}
           />
@@ -618,6 +654,9 @@ function NowView(props: {
 function ProjectView(props: {
   dashboard: DashboardSnapshot;
   catalog: DashboardCatalogProject[];
+  executionMap: ExecutionMapResult | null;
+  executionMapLoading: boolean;
+  executionMapError: string | null;
   onFeature: (featureKey: string) => void;
   onItem: (itemKey: string) => void;
 }) {
@@ -691,7 +730,118 @@ function ProjectView(props: {
           })}
         </div>
       </section>
+
+      <ExecutionMapPanel
+        map={props.executionMap}
+        loading={props.executionMapLoading}
+        error={props.executionMapError}
+        onItem={props.onItem}
+      />
     </div>
+  );
+}
+
+function ExecutionMapPanel(props: {
+  map: ExecutionMapResult | null;
+  loading: boolean;
+  error: string | null;
+  onItem: (itemKey: string) => void;
+}) {
+  const map = props.map;
+  if (!map && props.loading) {
+    return (
+      <section className="panel execution-map-panel" aria-labelledby="execution-map-title">
+        <div className="panel-header"><h2 id="execution-map-title">Mapa de execução</h2><small>atualizando</small></div>
+        <div className="execution-map-loading" role="status">Lendo ondas e agentes ativos…</div>
+      </section>
+    );
+  }
+  if (!map) {
+    return (
+      <section className="panel execution-map-panel" aria-labelledby="execution-map-title">
+        <div className="panel-header"><h2 id="execution-map-title">Mapa de execução</h2><small>indisponível</small></div>
+        <EmptyState title="Mapa ainda não disponível" detail={props.error ?? 'Selecione uma entrega para acompanhar as ondas.'} />
+      </section>
+    );
+  }
+
+  const classification = executionClassification(map.classification);
+  return (
+    <section className="panel execution-map-panel" aria-labelledby="execution-map-title">
+      <div className="panel-header"><h2 id="execution-map-title">Mapa de execução</h2><small>{map.summary.openItems} abertas · {map.summary.activeAgents} agentes</small></div>
+      <div className="execution-map-intro">
+        <div>
+          <span className="eyebrow">Estratégia observada</span>
+          <strong className={`execution-class ${classification.tone}`}>{classification.label}</strong>
+          <span className="execution-class-code">{map.classification}</span>
+        </div>
+        <p>{classification.detail}</p>
+      </div>
+      <div className="execution-legend" aria-label="Legenda das trilhas">
+        <span className="execution-legend-item linear"><i />Linha única</span>
+        <span className="execution-legend-item parallel"><i />Em paralelo</span>
+        <span className="execution-legend-item unclassified"><i />Sem classificação</span>
+      </div>
+      {map.waves.length > 0 ? (
+        <div className="execution-waves" aria-label="Ondas de execução">
+          {map.waves.map((wave) => (
+            <section className="execution-wave" key={wave.index} aria-labelledby={`execution-wave-${wave.index}`}>
+              <div className="execution-wave-head">
+                <strong id={`execution-wave-${wave.index}`}>Onda {wave.index + 1}</strong>
+                <span>{wave.items.length} {wave.items.length === 1 ? 'fatia' : 'fatias'}</span>
+              </div>
+              <div className="execution-lane" role="list">
+                {wave.items.map((item) => (
+                  <button
+                    type="button"
+                    role="listitem"
+                    key={`${item.featureKey}:${item.itemKey}`}
+                    className={`execution-node ${item.state === 'CLOSED' ? 'closed' : ''}`}
+                    onClick={() => props.onItem(item.itemKey)}
+                    title={`${item.featureKey}:${item.itemKey} · ${item.title}`}
+                  >
+                    <span className="execution-node-key">{item.featureKey}:{item.itemKey}</span>
+                    <b>{item.title}</b>
+                    <small>{humanState(item.state)}</small>
+                    {item.dependencies.length > 0 && (
+                      <span className="execution-node-deps">
+                        depois de {item.dependencies.map((dependency) => `${dependency.featureKey}:${dependency.itemKey}`).join(', ')}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="Nenhuma onda aberta" detail="As folhas efetivas desta entrega já foram concluídas." />
+      )}
+      <div className="execution-agents">
+        <div className="execution-agents-head">
+          <strong>Agentes ativos</strong>
+          <span>{map.summary.activeAgents ? 'presença atualizada no polling' : 'nenhuma lease ativa'}</span>
+        </div>
+        {map.agents.length > 0 ? (
+          <ul>
+            {map.agents.map((agent) => (
+              <li key={`${agent.holder}:${agent.featureKey}:${agent.itemKey}`}>
+                <span className="agent-presence" aria-hidden="true" />
+                <div>
+                  <b>{agent.holder}</b>
+                  <span>{agent.featureKey}:{agent.itemKey} · {agent.title}</span>
+                </div>
+                {agent.unlocks.length > 0 && (
+                  <small>desbloqueia {agent.unlocks.map((item) => `${item.featureKey}:${item.itemKey}`).join(', ')}</small>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="execution-agents-empty">As próximas fatias aparecem aqui quando uma lease for reivindicada.</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -988,6 +1138,18 @@ function humanResult(result: string) {
   if (result === 'TIMEOUT') return 'expirou';
   if (result === 'INFRASTRUCTURE_ERROR') return 'erro de infra';
   return result.replaceAll('_', ' ').toLowerCase();
+}
+function executionClassification(classification: ExecutionMapResult['classification']) {
+  if (classification === 'LINEAR') {
+    return { label: 'Linha única', tone: 'linear', detail: 'As dependências formam uma sequência: a próxima fatia aguarda a anterior.' };
+  }
+  if (classification === 'PARALLEL') {
+    return { label: 'Em paralelo', tone: 'parallel', detail: 'Há fatias independentes na mesma onda e caminhos que podem avançar juntos.' };
+  }
+  if (classification === 'EMPTY') {
+    return { label: 'Concluída', tone: 'empty', detail: 'Não há folhas abertas para organizar em uma nova onda.' };
+  }
+  return { label: 'Sem classificação', tone: 'unclassified', detail: 'O ledger não encontrou evidência suficiente para afirmar uma trilha paralela.' };
 }
 function stateTone(state: string) {
   if (state === 'CLOSED' || state === 'APPROVED' || state === 'GREEN_CONFIRMED') return 'ok';

@@ -100,6 +100,34 @@ const catalog = {
   }],
 };
 
+const executionMap = {
+  project: { key: 'demo', name: 'Demo' },
+  selection: { featureKey: 'F1' },
+  classification: 'PARALLEL',
+  summary: { totalItems: 4, openItems: 4, closedItems: 0, activeAgents: 1, waveCount: 2, maxParallelism: 2 },
+  waves: [
+    {
+      index: 0,
+      items: [
+        { featureKey: 'F1', itemKey: 'A', title: 'Base A', state: 'IMPLEMENTING', position: 1, wave: 0, dependencies: [], dependents: [] },
+        { featureKey: 'F1', itemKey: 'B', title: 'Base B', state: 'IMPLEMENTING', position: 2, wave: 0, dependencies: [], dependents: [] },
+      ],
+    },
+    {
+      index: 1,
+      items: [
+        { featureKey: 'F1', itemKey: 'C', title: 'Depois de A', state: 'AUTHORIZED', position: 3, wave: 1, dependencies: [{ featureKey: 'F1', itemKey: 'A', title: 'Base A', state: 'IMPLEMENTING' }], dependents: [] },
+        { featureKey: 'F1', itemKey: 'D', title: 'Depois de B', state: 'AUTHORIZED', position: 4, wave: 1, dependencies: [{ featureKey: 'F1', itemKey: 'B', title: 'Base B', state: 'IMPLEMENTING' }], dependents: [] },
+      ],
+    },
+  ],
+  items: [],
+  agents: [{
+    holder: 'agent:second', featureKey: 'F1', itemKey: 'B', title: 'Base B', state: 'IMPLEMENTING', generation: 1,
+    expiresAt: '2099-01-01T00:00:00.000Z', unlocks: [{ featureKey: 'F1', itemKey: 'D', title: 'Depois de B', state: 'AUTHORIZED' }],
+  }],
+} as const;
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -107,9 +135,15 @@ afterEach(() => {
 });
 
 describe('acompanhamento do workflow', () => {
-  const stubFetch = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+const stubFetch = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
     ok: true,
-    json: async () => String(url).includes('/plan-check') ? planReport : String(url).includes('/catalog') ? catalog : snapshot,
+    json: async () => String(url).includes('/plan-check')
+      ? planReport
+      : String(url).includes('/catalog')
+        ? catalog
+        : String(url).includes('/execution-map')
+          ? executionMap
+          : snapshot,
   })));
 
   it('mostra o que o agente está fazendo agora e a entrega', async () => {
@@ -133,6 +167,14 @@ describe('acompanhamento do workflow', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entregas' })).toBeTruthy());
     expect(screen.getAllByText('Feature one').length).toBeGreaterThan(0);
     expect(screen.getByText('0/2 etapas')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Mapa de execução' })).toBeTruthy();
+    expect(screen.getAllByText('Em paralelo').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Onda 1')).toBeTruthy();
+    expect(screen.getByText('Onda 2')).toBeTruthy();
+    expect(screen.getByText('agent:second')).toBeTruthy();
+    expect(screen.getByText(/desbloqueia.*D/)).toBeTruthy();
+    expect(screen.getByText('Linha única')).toBeTruthy();
+    expect(screen.getByText('Sem classificação')).toBeTruthy();
   });
 
   it('abre a auditoria do planejamento com política, métricas e sugestões', async () => {
@@ -161,7 +203,11 @@ describe('acompanhamento do workflow', () => {
       calls.push({ url, init });
       return {
         ok: true,
-        json: async () => String(url).includes('/catalog') ? catalog : snapshot,
+        json: async () => String(url).includes('/catalog')
+          ? catalog
+          : String(url).includes('/execution-map')
+            ? executionMap
+            : snapshot,
       };
     }));
 
@@ -195,7 +241,11 @@ describe('acompanhamento do workflow', () => {
     };
     vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
       ok: true,
-      json: async () => String(url).includes('/catalog') ? leafCatalog : snapshot,
+      json: async () => String(url).includes('/catalog')
+        ? leafCatalog
+        : String(url).includes('/execution-map')
+          ? executionMap
+          : snapshot,
     })));
 
     render(<App />);
