@@ -70,8 +70,13 @@ altere o SQLite com outro programa.
 
    ```bash
    rtk node dist/interfaces/cli/main.js project list
+   rtk node dist/interfaces/cli/main.js frontier --project <project-key>
    rtk node dist/interfaces/cli/main.js feature list --project <project-key>
    ```
+
+   `feature list --project <project-key>` é compacto por padrão: use-o para
+   descobrir chaves, estados e contagens, não para carregar todos os critérios
+   e testes. A fronteira mostra somente folhas efetivas e ações pendentes.
 
 3. Escolha explicitamente uma feature e uma fatia e leia o contexto:
 
@@ -94,6 +99,29 @@ altere o SQLite com outro programa.
 No MCP, consulte primeiro `workflow_list_projects`, `workflow_list_features`,
 `workflow_list_repositories`, `workflow_list_decisions` e
 `workflow_list_pending`. Depois use `workflow_context` e `workflow_record`.
+
+## Descoberta compacta e contexto mínimo
+
+Comece sempre pela menor projeção que responde à pergunta. A sequência
+recomendada é `project list`, `frontier --project` e
+`feature list --project <project-key>`. Só depois de escolher a feature e a
+fatia amplie a consulta:
+
+```bash
+rtk node dist/interfaces/cli/main.js feature show --project <project-key> --feature <feature-key>
+rtk node dist/interfaces/cli/main.js repository list --project <project-key> --repository <repository-key>
+rtk node dist/interfaces/cli/main.js decision list --project <project-key> --feature <feature-key> --item <item-key>
+rtk node dist/interfaces/cli/main.js pending list --project <project-key> --feature <feature-key> --item <item-key>
+rtk node dist/interfaces/cli/main.js context \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+`feature show` e `repository list --include-profiles` são as consultas
+detalhadas sob demanda. Para decisões e pendências, mantenha `--feature` e
+`--item` quando o escopo já for conhecido; use `--key`, `--status` ou
+`--include-content` somente quando a pergunta exigir. Não faça listagens
+globais de decisões, pendências, perfis ou fatias para descobrir um único
+registro. O MCP deve passar os mesmos filtros aos tools equivalentes.
 
 ## Vocabulário
 
@@ -189,6 +217,24 @@ geração; nunca reutilize a geração anterior.
 Para escolher a próxima fatia, consulte `workflow frontier --project <key>`.
 Ele mostra a fronteira das folhas, dependências e a ação humana ou automática
 esperada, sem contar pais `SUPERSEDED` como trabalho aberto.
+
+### Coordenação paralela e presença de agentes
+
+Planeje em ondas: fatias sem dependências entre si e com caminhos de escopo
+disjuntos podem avançar em paralelo; uma cadeia explícita de dependências deve
+continuar linear. O `frontier` e o mapa de execução da interface web mostram
+as ondas, holders ativos e quais dependentes cada agente pode desbloquear.
+`UNCLASSIFIED` significa que o ledger não encontrou evidência suficiente para
+afirmar paralelismo — não transforme ausência de dependência registrada em
+autorização implícita.
+
+Use `MANAGED_WORKTREE` quando agentes paralelos precisarem editar o mesmo
+projeto com isolamento; o ledger bloqueia claims com paths sobrepostos. O modo
+`SHARED` continua apropriado para tarefas que precisam compartilhar a mesma
+worktree e, nesse caso, a execução deve ser coordenada como uma linha única.
+Cada agente deve usar um holder identificável (`agent:<runtime>:<run-id>`) e
+consultar o mapa antes de escolher a próxima fatia, para saber quem já está
+trabalhando e qual trabalho é desbloqueado depois.
 
 Dependências são explícitas e acíclicas. Declare-as em `item define --depends-on
 <feature>:<item>` ou use `item dependency add/remove/list` enquanto a fatia

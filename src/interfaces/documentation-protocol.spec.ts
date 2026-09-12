@@ -24,4 +24,16 @@ describe('agent granularity protocol documentation', () => {
     expect(agents).toContain('workflow_request_slice_size_exception');
     expect(agents).toContain('workflow_replan_item');
   });
+
+  it('keeps discovery scoped and exposes the parallel coordination contract', () => {
+    const readme = read('README.md');
+    const agents = read('AGENTS.md');
+
+    expect(readme).toContain('feature list --project <project-key>');
+    expect(readme).toContain('feature show --project <project-key> --feature <feature-key>');
+    expect(readme).toContain('UNCLASSIFIED');
+    expect(readme).toContain('mapa de execução');
+    expect(agents).toContain('decision list --project <project-key> --feature <feature-key> --item <item-key>');
+    expect(agents).toContain('pending list --project <project-key> --feature <feature-key> --item <item-key>');
+  });
 });

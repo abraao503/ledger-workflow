@@ -129,6 +129,22 @@ node dist/interfaces/cli/main.js item dependency list \
 
 O ledger rejeita referências inexistentes, duplicadas e ciclos.
 
+O mapa de execução da interface web apresenta as ondas `LINEAR`, `PARALLEL`,
+`EMPTY` ou `UNCLASSIFIED`, além dos agentes ativos e dos próximos
+desbloqueios. `UNCLASSIFIED` é uma indicação conservadora de que o ledger não
+tem evidência suficiente para afirmar paralelismo. O modo `MANAGED_WORKTREE`
+oferece branches isoladas; o modo `SHARED` mantém o fluxo no checkout comum.
+
+O read model está disponível para a interface em:
+
+```text
+GET /api/execution-map?projectKey=<project-key>&featureKey=<feature-key>
+```
+
+Ele retorna somente folhas efetivas, ondas, dependências relevantes e leases;
+o histórico de tarefas substituídas continua visível no ledger, mas não é
+reapresentado como trabalho paralelo aberto.
+
 ### Worktrees gerenciadas
 
 A autorização continua usando o checkout compartilhado por padrão. Para
@@ -294,13 +310,36 @@ O executável do CLI aparece em `dist/interfaces/cli/main.js` depois do build:
 
 ```bash
 node dist/interfaces/cli/main.js project list
+node dist/interfaces/cli/main.js frontier --project <project-key>
 node dist/interfaces/cli/main.js feature list --project <project-key>
 node dist/interfaces/cli/main.js context \
   --project <project-key> --feature <feature-key> --item <item-key>
 ```
 
-Use `feature list` para descobrir as chaves existentes. Depois consulte uma
-fatia com `context`, informando `--feature` e `--item` explicitamente.
+`feature list --project <project-key>` retorna uma projeção compacta por
+padrão: chaves, estado e contagens das features, sem carregar todas as fatias.
+Use a fronteira para escolher folhas efetivas e consulte uma fatia com
+`context`, informando `--feature` e `--item` explicitamente.
+
+### Consultas específicas e economia de contexto
+
+Amplie os dados somente depois de conhecer o escopo. `feature show` traz as
+fatias de uma única feature; `repository list` pode trazer os perfis de um
+repositório; decisões e pendências aceitam filtros por feature e fatia:
+
+```bash
+node dist/interfaces/cli/main.js feature show --project <project-key> --feature <feature-key>
+node dist/interfaces/cli/main.js repository list --project <project-key> --repository <repository-key>
+node dist/interfaces/cli/main.js decision list --project <project-key> --feature <feature-key> --item <item-key>
+node dist/interfaces/cli/main.js pending list --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+Use `--include-items`, `--include-profiles` ou `--include-content` somente
+quando a implementação exigir o detalhe completo. `pending list` mostra
+pendências abertas por padrão; use `--status ALL` para auditoria histórica.
+Evite listagens globais de decisões, pendências, perfis e fatias quando a
+pergunta já tiver um projeto, feature ou item definido. O mesmo princípio vale
+para as ferramentas MCP: filtre primeiro e expanda depois.
 
 ### Abra o dashboard
 
