@@ -10,7 +10,10 @@ describe('workflow MCP server', () => {
     const app = {
       ledger: {
         listProjects: async () => ({ projects: [{ key: 'carara', name: 'Carará', status: 'ACTIVE' }] }),
-        listFeatures: async (projectKey: string) => ({ project: projectKey, features: [] }),
+        listFeatures: async (input: string | { projectKey: string }) => ({
+          project: typeof input === 'string' ? input : input.projectKey,
+          features: [],
+        }),
         listRepositories: async (projectKey: string) => ({ project: projectKey, repositories: [] }),
         listDecisions: async (projectKey: string) => ({ project: projectKey, decisions: [] }),
         listPendingItems: async (projectKey: string) => ({ project: projectKey, pendingItems: [] }),
@@ -178,6 +181,80 @@ describe('workflow MCP server', () => {
     expect(errorResult.isError).toBe(true);
     expect(errorResult.content).toEqual([
       { type: 'text', text: '[PROJECT_NOT_FOUND] PROJECT_NOT_FOUND' },
+    ]);
+
+    await client.close();
+    await server.close();
+  });
+
+  it('passes compact and scoped discovery options to the ledger', async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const app = {
+      ledger: {
+        listFeatures: async (input: unknown) => {
+          calls.push({ operation: 'listFeatures', input });
+          return { project: 'carara', features: [] };
+        },
+        listRepositories: async (input: unknown) => {
+          calls.push({ operation: 'listRepositories', input });
+          return { project: 'carara', repositories: [] };
+        },
+        listDecisions: async (input: unknown) => {
+          calls.push({ operation: 'listDecisions', input });
+          return { project: 'carara', decisions: [] };
+        },
+        listPendingItems: async (input: unknown) => {
+          calls.push({ operation: 'listPendingItems', input });
+          return { project: 'carara', pendingItems: [] };
+        },
+        getReadyFrontier: async (input: unknown) => {
+          calls.push({ operation: 'getReadyFrontier', input });
+          return { project: 'carara', features: [] };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const server = createMcpServer(app);
+    const client = new Client({ name: 'discovery-test-client', version: '0.1.0' });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    await client.callTool({
+      name: 'workflow_list_features',
+      arguments: { projectKey: 'carara', includeItems: false },
+    });
+    await client.callTool({
+      name: 'workflow_list_repositories',
+      arguments: { projectKey: 'carara', includeProfiles: false },
+    });
+    await client.callTool({
+      name: 'workflow_list_decisions',
+      arguments: { projectKey: 'carara', featureKey: 'E18', itemKey: '08A', includeContent: false },
+    });
+    await client.callTool({
+      name: 'workflow_list_pending',
+      arguments: { projectKey: 'carara', featureKey: 'E18', itemKey: '08A', resolution: 'OPEN' },
+    });
+    await client.callTool({
+      name: 'workflow_ready_frontier',
+      arguments: { projectKey: 'carara', includeEmptyFeatures: false, includeClosedDependencies: false },
+    });
+
+    expect(calls).toEqual([
+      { operation: 'listFeatures', input: { projectKey: 'carara', includeItems: false } },
+      { operation: 'listRepositories', input: { projectKey: 'carara', includeProfiles: false } },
+      {
+        operation: 'listDecisions',
+        input: { projectKey: 'carara', featureKey: 'E18', itemKey: '08A', includeContent: false },
+      },
+      {
+        operation: 'listPendingItems',
+        input: { projectKey: 'carara', featureKey: 'E18', itemKey: '08A', resolution: 'OPEN' },
+      },
+      {
+        operation: 'getReadyFrontier',
+        input: { projectKey: 'carara', includeEmptyFeatures: false, includeClosedDependencies: false },
+      },
     ]);
 
     await client.close();

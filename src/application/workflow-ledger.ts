@@ -51,6 +51,10 @@ import type {
   ConfirmStructuralRedInput,
   InvalidateGreenInput,
   ListValidationsInput,
+  ListFeaturesInput,
+  ListRepositoriesInput,
+  ListDecisionsInput,
+  ListPendingItemsInput,
   RecordDecisionInput,
   RecordPendingItemInput,
   PlanCheckRequest,
@@ -3195,10 +3199,17 @@ export class WorkflowLedger {
     return { projects };
   }
 
-  async listFeatures(projectKey: string) {
-    const project = await this.requireProject(projectKey);
+  async listFeatures(input: string | ListFeaturesInput) {
+    const request: ListFeaturesInput = typeof input === 'string'
+      ? { projectKey: input }
+      : input;
+    const includeItems = request.includeItems ?? true;
+    const project = await this.requireProject(request.projectKey);
     const features = await this.db.feature.findMany({
-      where: { projectId: project.id },
+      where: {
+        projectId: project.id,
+        ...(request.featureKey ? { key: request.featureKey } : {}),
+      },
       orderBy: { key: 'asc' },
       select: {
         key: true,
@@ -3224,19 +3235,34 @@ export class WorkflowLedger {
 
     return {
       project: project.key,
-      features: features.map((feature) => ({
-        ...feature,
-        ...deriveFeatureExecution(feature.items),
-        items: feature.items.map(({ id: _id, parentItemId: _parentItemId, ...item }) => ({
-          ...item,
-          parentItemKey: item.parentItem?.key,
-        })),
-      })),
+      features: features.map((feature) => {
+        const summary = {
+          key: feature.key,
+          name: feature.name,
+          summary: feature.summary,
+          status: feature.status,
+          currentPhaseKey: feature.currentPhaseKey,
+          ...deriveFeatureExecution(feature.items),
+        };
+        if (!includeItems) {
+          return summary;
+        }
+
+        return {
+          ...summary,
+          items: feature.items.map(({ id: _id, parentItemId: _parentItemId, ...item }) => ({
+            ...item,
+            parentItemKey: item.parentItem?.key,
+          })),
+        };
+      }),
     };
   }
 
   async getReadyFrontier(input: ReadyFrontierRequest): Promise<ReadyFrontierResult> {
     const project = await this.requireProject(input.projectKey);
+    const includeEmptyFeatures = input.includeEmptyFeatures ?? false;
+    const includeClosedDependencies = input.includeClosedDependencies ?? false;
     const features = await this.db.feature.findMany({
       where: {
         projectId: project.id,
@@ -3345,6 +3371,13 @@ export class WorkflowLedger {
           command = `item claim ${commandBase} --holder agent:<identidade>`;
         }
 
+        const visibleDependencies = includeClosedDependencies
+          ? dependencies
+          : dependencies.filter((dependency) => pendingDependencies.some((pending) => (
+              pending.dependsOnItem.key === dependency.itemKey
+              && pending.dependsOnItem.feature.key === dependency.featureKey
+            )));
+
         items.push({
           featureKey: feature.key,
           itemKey: item.key,
@@ -3354,7 +3387,7 @@ export class WorkflowLedger {
           nextAction,
           command,
           ...(recoveryCommand ? { recoveryCommand } : {}),
-          dependencies,
+          dependencies: visibleDependencies,
           ...(leaseInfo ? { lease: leaseInfo } : {}),
         });
       }
@@ -3362,7 +3395,12 @@ export class WorkflowLedger {
       return { featureKey: feature.key, name: feature.name, items };
     }));
 
-    return { project: project.key, features: result };
+    return {
+      project: project.key,
+      features: result.filter((feature) => (
+        feature.items.length > 0 || includeEmptyFeatures || Boolean(input.featureKey)
+      )),
+    };
   }
 
   async checkPlan(input: PlanCheckRequest): Promise<PlanCheckResult> {
@@ -3769,10 +3807,17 @@ export class WorkflowLedger {
     return true;
   }
 
-  async listRepositories(projectKey: string) {
-    const project = await this.requireProject(projectKey);
+  async listRepositories(input: string | ListRepositoriesInput) {
+    const request: ListRepositoriesInput = typeof input === 'string'
+      ? { projectKey: input }
+      : input;
+    const includeProfiles = request.includeProfiles ?? true;
+    const project = await this.requireProject(request.projectKey);
     const repositories = await this.db.repository.findMany({
-      where: { projectId: project.id },
+      where: {
+        projectId: project.id,
+        ...(request.repositoryKey ? { key: request.repositoryKey } : {}),
+      },
       orderBy: { key: 'asc' },
       include: {
         validationProfiles: {
@@ -3784,19 +3829,32 @@ export class WorkflowLedger {
 
     return {
       project: project.key,
-      repositories: repositories.map((repository) => ({
-        key: repository.key,
-        path: repository.path,
-        expectedBranch: repository.expectedBranch,
-        profiles: repository.validationProfiles.map((profile) => ({
-          key: profile.key,
-          program: profile.program,
-          args: decodeJson<string[]>(profile.argsJson, []),
-          parser: profile.parser,
-          cwd: profile.cwd,
-          timeoutSeconds: profile.timeoutSeconds,
-        })),
-      })),
+      repositories: repositories.map((repository) => {
+        const summary = {
+          key: repository.key,
+          path: repository.path,
+          expectedBranch: repository.expectedBranch,
+          profileCount: repository.validationProfiles.length,
+          profileKeys: repository.validationProfiles.map((profile) => profile.key),
+        };
+        if (!includeProfiles) {
+          return summary;
+        }
+
+        return {
+          key: repository.key,
+          path: repository.path,
+          expectedBranch: repository.expectedBranch,
+          profiles: repository.validationProfiles.map((profile) => ({
+            key: profile.key,
+            program: profile.program,
+            args: decodeJson<string[]>(profile.argsJson, []),
+            parser: profile.parser,
+            cwd: profile.cwd,
+            timeoutSeconds: profile.timeoutSeconds,
+          })),
+        };
+      }),
     };
   }
 
@@ -3887,10 +3945,22 @@ export class WorkflowLedger {
     });
   }
 
-  async listDecisions(projectKey: string) {
-    const project = await this.requireProject(projectKey);
+  async listDecisions(input: string | ListDecisionsInput) {
+    const request: ListDecisionsInput = typeof input === 'string'
+      ? { projectKey: input }
+      : input;
+    const includeContent = request.includeContent ?? true;
+    const project = await this.requireProject(request.projectKey);
+    if (request.itemKey && !request.featureKey) {
+      fail('ITEM_REQUIRES_FEATURE');
+    }
     const decisions = await this.db.decision.findMany({
-      where: { projectId: project.id },
+      where: {
+        projectId: project.id,
+        ...(request.key ? { key: request.key } : {}),
+        ...(request.featureKey ? { feature: { key: request.featureKey } } : {}),
+        ...(request.itemKey ? { workItem: { key: request.itemKey } } : {}),
+      },
       orderBy: { key: 'asc' },
       include: {
         feature: { select: { key: true } },
@@ -3903,7 +3973,7 @@ export class WorkflowLedger {
       decisions: decisions.map((decision) => ({
         key: decision.key,
         title: decision.title,
-        content: decision.content,
+        ...(includeContent ? { content: decision.content } : {}),
         durable: decision.durable,
         pinned: decision.pinned,
         featureKey: decision.feature?.key,
@@ -4000,10 +4070,23 @@ export class WorkflowLedger {
     return resolved;
   }
 
-  async listPendingItems(projectKey: string) {
-    const project = await this.requireProject(projectKey);
+  async listPendingItems(input: string | ListPendingItemsInput) {
+    const request: ListPendingItemsInput = typeof input === 'string'
+      ? { projectKey: input }
+      : input;
+    const project = await this.requireProject(request.projectKey);
+    if (request.itemKey && !request.featureKey) {
+      fail('ITEM_REQUIRES_FEATURE');
+    }
     const pendingItems = await this.db.pendingItem.findMany({
-      where: { projectId: project.id },
+      where: {
+        projectId: project.id,
+        ...(request.featureKey ? { feature: { key: request.featureKey } } : {}),
+        ...(request.itemKey ? { workItem: { key: request.itemKey } } : {}),
+        ...(request.resolution && request.resolution !== 'ALL'
+          ? { resolved: request.resolution === 'RESOLVED' }
+          : {}),
+      },
       orderBy: [{ resolved: 'asc' }, { blocking: 'desc' }, { key: 'asc' }],
       include: {
         feature: { select: { key: true } },

@@ -293,7 +293,10 @@ describe('workflow CLI', () => {
         operation: 'getRecord',
         input: { projectKey: 'carara', featureKey: 'E6', itemKey: '01' },
       },
-      { operation: 'listRepositories', input: 'carara' },
+      {
+        operation: 'listRepositories',
+        input: { projectKey: 'carara', includeProfiles: false },
+      },
     ]);
     expect(JSON.parse(output[0])).toMatchObject({ validations: [{ id: 'validation-1' }] });
     expect(JSON.parse(output[1])).toMatchObject({ item: { key: '01' } });
@@ -493,7 +496,10 @@ describe('workflow CLI', () => {
           pinned: true,
         },
       },
-      { operation: 'listDecisions', input: 'carara' },
+      {
+        operation: 'listDecisions',
+        input: { projectKey: 'carara', includeContent: false },
+      },
       {
         operation: 'recordPendingItem',
         input: {
@@ -506,7 +512,10 @@ describe('workflow CLI', () => {
           pinned: false,
         },
       },
-      { operation: 'listPendingItems', input: 'carara' },
+      {
+        operation: 'listPendingItems',
+        input: { projectKey: 'carara', resolution: 'OPEN' },
+      },
       {
         operation: 'resolvePendingItem',
         input: { projectKey: 'carara', key: 'PEND-01', reason: 'perfil registrado' },
@@ -547,5 +556,108 @@ describe('workflow CLI', () => {
     ]);
 
     expect(received?.findings).toEqual([]);
+  });
+
+  it('uses compact, scoped discovery commands by default', async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const app = {
+      ledger: {
+        listFeatures: async (input: unknown) => {
+          calls.push({ operation: 'listFeatures', input });
+          return { project: 'carara', features: [] };
+        },
+        listRepositories: async (input: unknown) => {
+          calls.push({ operation: 'listRepositories', input });
+          return { project: 'carara', repositories: [] };
+        },
+        listDecisions: async (input: unknown) => {
+          calls.push({ operation: 'listDecisions', input });
+          return { project: 'carara', decisions: [] };
+        },
+        listPendingItems: async (input: unknown) => {
+          calls.push({ operation: 'listPendingItems', input });
+          return { project: 'carara', pendingItems: [] };
+        },
+        getReadyFrontier: async (input: unknown) => {
+          calls.push({ operation: 'getReadyFrontier', input });
+          return { project: 'carara', features: [] };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+
+    await cli.parseAsync(['node', 'workflow', 'feature', 'list', '--project', 'carara']);
+    await cli.parseAsync(['node', 'workflow', 'repository', 'list', '--project', 'carara']);
+    await cli.parseAsync(['node', 'workflow', 'decision', 'list', '--project', 'carara']);
+    await cli.parseAsync(['node', 'workflow', 'pending', 'list', '--project', 'carara']);
+    await cli.parseAsync(['node', 'workflow', 'frontier', '--project', 'carara']);
+    await cli.parseAsync([
+      'node', 'workflow', 'feature', 'show', '--project', 'carara', '--feature', 'E18',
+    ]);
+    await cli.parseAsync([
+      'node', 'workflow', 'repository', 'list', '--project', 'carara',
+      '--repository', 'api', '--include-profiles',
+    ]);
+    await cli.parseAsync([
+      'node', 'workflow', 'decision', 'list', '--project', 'carara',
+      '--feature', 'E18', '--item', '08A', '--include-content',
+    ]);
+    await cli.parseAsync([
+      'node', 'workflow', 'pending', 'list', '--project', 'carara',
+      '--feature', 'E18', '--item', '08A', '--status', 'RESOLVED',
+    ]);
+
+    expect(calls).toEqual([
+      {
+        operation: 'listFeatures',
+        input: { projectKey: 'carara', includeItems: false },
+      },
+      {
+        operation: 'listRepositories',
+        input: { projectKey: 'carara', includeProfiles: false },
+      },
+      {
+        operation: 'listDecisions',
+        input: { projectKey: 'carara', includeContent: false },
+      },
+      {
+        operation: 'listPendingItems',
+        input: { projectKey: 'carara', resolution: 'OPEN' },
+      },
+      {
+        operation: 'getReadyFrontier',
+        input: {
+          projectKey: 'carara',
+          includeEmptyFeatures: false,
+          includeClosedDependencies: false,
+        },
+      },
+      {
+        operation: 'listFeatures',
+        input: { projectKey: 'carara', featureKey: 'E18', includeItems: true },
+      },
+      {
+        operation: 'listRepositories',
+        input: { projectKey: 'carara', repositoryKey: 'api', includeProfiles: true },
+      },
+      {
+        operation: 'listDecisions',
+        input: {
+          projectKey: 'carara',
+          featureKey: 'E18',
+          itemKey: '08A',
+          includeContent: true,
+        },
+      },
+      {
+        operation: 'listPendingItems',
+        input: {
+          projectKey: 'carara',
+          featureKey: 'E18',
+          itemKey: '08A',
+          resolution: 'RESOLVED',
+        },
+      },
+    ]);
   });
 });

@@ -24,12 +24,14 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   server.registerTool(
     'workflow_list_features',
     {
-      description: 'Lista as features do projeto e suas fatias (work items), com fase, posição e estado.',
+      description: 'Lista features compactas por padrão; use includeItems ou featureKey para aprofundar uma seleção.',
       inputSchema: {
         projectKey: z.string(),
+        featureKey: z.string().optional(),
+        includeItems: z.boolean().default(false),
       },
     },
-    async (input) => runTool(() => app.ledger.listFeatures(input.projectKey)),
+    async (input) => runTool(() => app.ledger.listFeatures(input)),
   );
 
   server.registerTool(
@@ -39,6 +41,8 @@ export function createMcpServer(app: WorkflowApp): McpServer {
       inputSchema: {
         projectKey: z.string(),
         featureKey: z.string().optional(),
+        includeEmptyFeatures: z.boolean().default(false),
+        includeClosedDependencies: z.boolean().default(false),
       },
     },
     async (input) => runTool(() => app.ledger.getReadyFrontier(input)),
@@ -74,34 +78,43 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   server.registerTool(
     'workflow_list_repositories',
     {
-      description: 'Lista os repositórios do projeto e os perfis de validação ativos.',
+      description: 'Lista repositórios compactos por padrão; use repositoryKey e includeProfiles para detalhes.',
       inputSchema: {
         projectKey: z.string(),
+        repositoryKey: z.string().optional(),
+        includeProfiles: z.boolean().default(false),
       },
     },
-    async (input) => runTool(() => app.ledger.listRepositories(input.projectKey)),
+    async (input) => runTool(() => app.ledger.listRepositories(input)),
   );
 
   server.registerTool(
     'workflow_list_decisions',
     {
-      description: 'Lista as decisões do projeto, incluindo escopo de feature e fatia.',
+      description: 'Lista decisões compactas e filtráveis; o conteúdo completo é opcional.',
       inputSchema: {
         projectKey: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+        key: z.string().optional(),
+        includeContent: z.boolean().default(false),
       },
     },
-    async (input) => runTool(() => app.ledger.listDecisions(input.projectKey)),
+    async (input) => runTool(() => app.ledger.listDecisions(input)),
   );
 
   server.registerTool(
     'workflow_list_pending',
     {
-      description: 'Lista as pendências do projeto, incluindo bloqueio, resolução e escopo.',
+      description: 'Lista pendências abertas por padrão, com filtros de feature, fatia e resolução.',
       inputSchema: {
         projectKey: z.string(),
+        featureKey: z.string().optional(),
+        itemKey: z.string().optional(),
+        resolution: z.enum(['OPEN', 'RESOLVED', 'ALL']).default('OPEN'),
       },
     },
-    async (input) => runTool(() => app.ledger.listPendingItems(input.projectKey)),
+    async (input) => runTool(() => app.ledger.listPendingItems(input)),
   );
 
   server.registerTool(

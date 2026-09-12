@@ -64,10 +64,16 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   repository
     .command('list')
-    .description('Lista repositórios e perfis de validação ativos do projeto')
+    .description('Lista repositórios em formato compacto; use --include-profiles para detalhes')
     .requiredOption('--project <key>')
+    .option('--repository <key>', 'restringe a um repositório')
+    .option('--include-profiles', 'inclui comandos completos dos perfis ativos')
     .action(async (options, command) => {
-      emit(command, await app.ledger.listRepositories(options.project), stdout);
+      emit(command, await app.ledger.listRepositories({
+        projectKey: options.project,
+        repositoryKey: options.repository,
+        includeProfiles: options.includeProfiles ?? false,
+      }), stdout);
     });
 
   const template = program.command('template').description('Gerencia templates versionados');
@@ -108,10 +114,29 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   feature
     .command('list')
-    .description('Lista features do projeto com suas fatias e estados')
+    .description('Lista features em formato compacto; use --include-items para as fatias')
     .requiredOption('--project <key>')
+    .option('--feature <key>', 'restringe a uma feature')
+    .option('--include-items', 'inclui as fatias e estados da feature')
     .action(async (options, command) => {
-      emit(command, await app.ledger.listFeatures(options.project), stdout);
+      emit(command, await app.ledger.listFeatures({
+        projectKey: options.project,
+        featureKey: options.feature,
+        includeItems: options.includeItems ?? false,
+      }), stdout);
+    });
+
+  feature
+    .command('show')
+    .description('Mostra uma feature específica com suas fatias')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listFeatures({
+        projectKey: options.project,
+        featureKey: options.feature,
+        includeItems: true,
+      }), stdout);
     });
 
   program
@@ -119,10 +144,14 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .description('Mostra a fronteira de trabalho acionável e o próximo comando de cada folha')
     .requiredOption('--project <key>')
     .option('--feature <key>')
+    .option('--include-empty', 'inclui features sem folhas abertas')
+    .option('--include-closed-dependencies', 'inclui dependências já fechadas')
     .action(async (options, command) => {
       emit(command, await app.ledger.getReadyFrontier({
         projectKey: options.project,
         featureKey: options.feature,
+        includeEmptyFeatures: options.includeEmpty ?? false,
+        includeClosedDependencies: options.includeClosedDependencies ?? false,
       }), stdout);
     });
 
@@ -703,10 +732,20 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   decision
     .command('list')
-    .description('Lista decisões do projeto')
+    .description('Lista decisões em formato compacto e filtrável')
     .requiredOption('--project <key>')
+    .option('--feature <key>')
+    .option('--item <key>')
+    .option('--key <key>')
+    .option('--include-content', 'inclui o conteúdo completo das decisões')
     .action(async (options, command) => {
-      emit(command, await app.ledger.listDecisions(options.project), stdout);
+      emit(command, await app.ledger.listDecisions({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        key: options.key,
+        includeContent: options.includeContent ?? false,
+      }), stdout);
     });
 
   const pending = program.command('pending').description('Registra e resolve pendências');
@@ -733,10 +772,18 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
 
   pending
     .command('list')
-    .description('Lista pendências do projeto')
+    .description('Lista pendências abertas por padrão, com filtros de escopo')
     .requiredOption('--project <key>')
+    .option('--feature <key>')
+    .option('--item <key>')
+    .option('--status <status>', 'OPEN|RESOLVED|ALL', 'OPEN')
     .action(async (options, command) => {
-      emit(command, await app.ledger.listPendingItems(options.project), stdout);
+      emit(command, await app.ledger.listPendingItems({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        resolution: parsePendingResolution(options.status),
+      }), stdout);
     });
 
   pending
@@ -845,6 +892,17 @@ function parseJson<T>(value: string, field: string): T {
 
 function splitCsv(value: string): string[] {
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function parsePendingResolution(value: string): 'OPEN' | 'RESOLVED' | 'ALL' {
+  if (value === 'OPEN' || value === 'RESOLVED' || value === 'ALL') {
+    return value;
+  }
+
+  throw new WorkflowApplicationError(
+    'PENDING_RESOLUTION_INVALID',
+    `Status de pendência inválido: ${value}. Use OPEN, RESOLVED ou ALL.`,
+  );
 }
 
 function collect(value: string, previous: string[] = []): string[] {

@@ -296,6 +296,37 @@ export type ReconcileWorkItemLeasesInput = {
 export type ReadyFrontierRequest = {
   projectKey: string;
   featureKey?: string;
+  includeEmptyFeatures?: boolean;
+  includeClosedDependencies?: boolean;
+};
+
+export type ListFeaturesInput = {
+  projectKey: string;
+  featureKey?: string;
+  includeItems?: boolean;
+};
+
+export type ListRepositoriesInput = {
+  projectKey: string;
+  repositoryKey?: string;
+  includeProfiles?: boolean;
+};
+
+export type ListDecisionsInput = {
+  projectKey: string;
+  featureKey?: string;
+  itemKey?: string;
+  key?: string;
+  includeContent?: boolean;
+};
+
+export type PendingResolution = 'OPEN' | 'RESOLVED' | 'ALL';
+
+export type ListPendingItemsInput = {
+  projectKey: string;
+  featureKey?: string;
+  itemKey?: string;
+  resolution?: PendingResolution;
 };
 
 export type ReadyFrontierKind =
