@@ -22,6 +22,24 @@ describe('workflow web API', () => {
     calls.push({ method, input });
     return result();
   };
+  const executionMap = {
+    getExecutionMap: recording('getExecutionMap', () => ({
+      project: { key: 'demo', name: 'Demo' },
+      selection: { featureKey: 'F1' },
+      classification: 'PARALLEL',
+      summary: {
+        totalItems: 2,
+        openItems: 2,
+        closedItems: 0,
+        activeAgents: 1,
+        waveCount: 1,
+        maxParallelism: 2,
+      },
+      waves: [],
+      items: [],
+      agents: [],
+    })),
+  };
   const ledger = {
     getValidationLog: async () => ({ text: 'log' }),
     checkPlan: recording('checkPlan', () => ({
@@ -35,6 +53,7 @@ describe('workflow web API', () => {
   };
   const app = {
     dashboard,
+    executionMap,
     ledger,
   } as unknown as WorkflowApp;
   const server = createWebServer(app);
@@ -75,6 +94,20 @@ describe('workflow web API', () => {
       });
     expect(calls).toEqual(expect.arrayContaining([
       { method: 'checkPlan', input: { projectKey: 'demo', featureKey: 'F1' } },
+    ]));
+  });
+
+  it('serves a compact execution map for the coordination view', async () => {
+    calls.length = 0;
+    await request(server)
+      .get('/api/execution-map?projectKey=demo&featureKey=F1')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.classification).toBe('PARALLEL');
+        expect(response.body.summary.maxParallelism).toBe(2);
+      });
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'getExecutionMap', input: { projectKey: 'demo', featureKey: 'F1' } },
     ]));
   });
 

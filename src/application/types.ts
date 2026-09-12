@@ -365,6 +365,74 @@ export type ReadyFrontierResult = {
   }>;
 };
 
+export type ExecutionMapRequest = {
+  projectKey: string;
+  featureKey?: string;
+};
+
+export type ExecutionMapClassification = 'LINEAR' | 'PARALLEL' | 'UNCLASSIFIED' | 'EMPTY';
+
+export type ExecutionMapDependency = {
+  featureKey: string;
+  itemKey: string;
+  title: string;
+  state: string;
+  external?: boolean;
+};
+
+export type ExecutionMapLease = {
+  holder: string;
+  generation: number;
+  expiresAt: string;
+  expired: boolean;
+  active: boolean;
+};
+
+export type ExecutionMapItem = {
+  featureKey: string;
+  itemKey: string;
+  title: string;
+  state: string;
+  position: number;
+  wave: number | null;
+  dependencies: ExecutionMapDependency[];
+  dependents: ExecutionMapDependency[];
+  lease?: ExecutionMapLease;
+};
+
+export type ExecutionMapWave = {
+  index: number;
+  items: ExecutionMapItem[];
+};
+
+export type ExecutionMapAgent = {
+  holder: string;
+  featureKey: string;
+  itemKey: string;
+  title: string;
+  state: string;
+  generation: number;
+  expiresAt: string;
+  unlocks: ExecutionMapDependency[];
+};
+
+export type ExecutionMapResult = {
+  project: { key: string; name: string };
+  selection: { featureKey?: string };
+  classification: ExecutionMapClassification;
+  summary: {
+    totalItems: number;
+    openItems: number;
+    closedItems: number;
+    activeAgents: number;
+    waveCount: number;
+    maxParallelism: number;
+  };
+  waves: ExecutionMapWave[];
+  items: ExecutionMapItem[];
+  agents: ExecutionMapAgent[];
+};
+
 export type WorkItemDependencyRef = {
   featureKey: string;
   itemKey: string;

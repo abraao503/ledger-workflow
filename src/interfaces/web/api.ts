@@ -88,6 +88,14 @@ export function createWebApp(app: WorkflowApp) {
     response.json(snapshot);
   }));
 
+  router.get('/execution-map', asyncRoute(async (request, response) => {
+    const query = request.query as Record<string, string | string[] | undefined>;
+    response.json(await app.executionMap.getExecutionMap({
+      projectKey: requiredQuery(query, 'projectKey'),
+      featureKey: firstQuery(query.featureKey),
+    }));
+  }));
+
   router.get('/plan-check', asyncRoute(async (request, response) => {
     const query = request.query as Record<string, string | string[] | undefined>;
     response.json(await app.ledger.checkPlan({
