@@ -22,7 +22,9 @@ const defaultCommand: GitCommandPort = {
   async run(args, cwd) {
     const result = await execFileAsync(
       'rtk',
-      args,
+      // Git output is parsed as a machine-readable protocol. RTK's regular
+      // git wrapper appends presentation text such as "Changes:" to stdout.
+      ['proxy', ...args],
       {
         cwd,
         encoding: 'utf8',

@@ -3313,7 +3313,7 @@ export class WorkflowLedger {
           itemKey: dependency.dependsOnItem.key,
           state: dependency.dependsOnItem.state,
         }));
-        const pendingDependencies = [];
+        const pendingDependencies: typeof item.dependencies = [];
         for (const dependency of item.dependencies) {
           if (!(await this.isEffectivelyClosed(dependency.dependsOnItemId, this.db))) {
             pendingDependencies.push(dependency);

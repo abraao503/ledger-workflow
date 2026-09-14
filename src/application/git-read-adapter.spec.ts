@@ -1,4 +1,21 @@
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
 import { GitReadAdapter, type GitCommandPort } from './git-read-adapter.js';
+
+const execFileAsync = promisify(execFile);
+
+async function runRawGit(args: string[], cwd: string): Promise<string> {
+  const result = await execFileAsync('rtk', ['proxy', 'git', ...args], {
+    cwd,
+    encoding: 'utf8',
+  });
+
+  return result.stdout;
+}
 
 describe('GitReadAdapter', () => {
   it('captures the branch, commit and all working-tree changes', async () => {
@@ -190,6 +207,31 @@ describe('GitReadAdapter', () => {
     expect(calls).toEqual([[
       'git', 'diff', '--name-only', '-z', '--no-ext-diff', 'base...candidate', '--',
     ]]);
+  });
+
+  it('keeps RTK presentation text out of machine-readable diff paths', async () => {
+    const repositoryPath = await mkdtemp(path.join(os.tmpdir(), 'workflow-git-read-'));
+
+    try {
+      await runRawGit(['init', '--quiet'], repositoryPath);
+      await runRawGit(['config', 'user.email', 'workflow-tests@example.com'], repositoryPath);
+      await runRawGit(['config', 'user.name', 'Workflow tests'], repositoryPath);
+      await mkdir(path.join(repositoryPath, 'src'), { recursive: true });
+      await writeFile(path.join(repositoryPath, 'src/changed.ts'), 'base\n');
+      await runRawGit(['add', '--', 'src/changed.ts'], repositoryPath);
+      await runRawGit(['commit', '--quiet', '-m', 'base'], repositoryPath);
+      const baseSha = (await runRawGit(['rev-parse', 'HEAD'], repositoryPath)).trim();
+
+      await writeFile(path.join(repositoryPath, 'src/changed.ts'), 'candidate\n');
+      await runRawGit(['add', '--', 'src/changed.ts'], repositoryPath);
+      await runRawGit(['commit', '--quiet', '-m', 'candidate'], repositoryPath);
+      const candidateSha = (await runRawGit(['rev-parse', 'HEAD'], repositoryPath)).trim();
+
+      await expect(new GitReadAdapter().diffFiles(repositoryPath, baseSha, candidateSha))
+        .resolves.toEqual(['src/changed.ts']);
+    } finally {
+      await rm(repositoryPath, { recursive: true, force: true });
+    }
   });
 
   it('treats an already removed worktree as a successful cleanup retry', async () => {
