@@ -29,9 +29,34 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         projectKey: z.string(),
         featureKey: z.string().optional(),
         includeItems: z.boolean().default(false),
+        taskType: z.enum(['FEATURE', 'PATCH']).optional(),
       },
     },
     async (input) => runTool(() => app.ledger.listFeatures(input)),
+  );
+
+  server.registerTool(
+    'workflow_create_task',
+    {
+      description: 'Cria uma tarefa FEATURE no modelo atual ou uma tarefa PATCH enxuta, já pronta para autorização.',
+      inputSchema: {
+        projectKey: z.string(),
+        type: z.enum(['FEATURE', 'PATCH']),
+        key: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        templateKey: z.string().optional().describe('Obrigatório para FEATURE; dispensado para PATCH.'),
+        templateVersion: z.number().int().positive().optional(),
+        kind: z.enum(['CODE', 'DOCUMENTATION', 'VALIDATION', 'OTHER']).optional(),
+        scope: z.object({
+          repositories: z.array(z.object({
+            repositoryKey: z.string(),
+            paths: z.array(z.string()),
+          })),
+        }).optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.createTask(input)),
   );
 
   server.registerTool(

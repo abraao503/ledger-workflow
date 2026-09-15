@@ -26,6 +26,7 @@ describe('workflow MCP server', () => {
           pending: { key: 'SIZE-REQUEST', input },
           item: { state: 'DRAFT' },
         }),
+        createTask: async (input: unknown) => ({ taskType: 'PATCH', input }),
         getContext: async (input: { projectKey: string }) => {
           if (input.projectKey === 'missing') {
             throw new WorkflowApplicationError('PROJECT_NOT_FOUND');
@@ -73,6 +74,7 @@ describe('workflow MCP server', () => {
       'workflow_compact_history',
       'workflow_confirm_structural_red',
       'workflow_context',
+      'workflow_create_task',
       'workflow_decision_record',
       'workflow_define_item',
       'workflow_integrate_item',
@@ -124,6 +126,24 @@ describe('workflow MCP server', () => {
       {
         type: 'text',
         text: expect.stringContaining('"project":"carara"'),
+      },
+    ]);
+
+    const taskResult = await client.callTool({
+      name: 'workflow_create_task',
+      arguments: {
+        projectKey: 'carara',
+        type: 'PATCH',
+        key: 'P1',
+        title: 'Ajuste pontual',
+        summary: 'Correção simples',
+      },
+    });
+    expect(taskResult.isError).not.toBe(true);
+    expect(taskResult.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('"taskType":"PATCH"'),
       },
     ]);
 

@@ -13,6 +13,9 @@ import type {
 
 export type DatabaseClient = PrismaClient;
 
+export const taskTypes = ['FEATURE', 'PATCH'] as const;
+export type TaskType = (typeof taskTypes)[number];
+
 export type CreateProjectInput = {
   key: string;
   name: string;
@@ -40,6 +43,27 @@ export type CreateFeatureInput = {
   key: string;
   name: string;
   summary: string;
+};
+
+export type CreatePointTaskInput = {
+  projectKey: string;
+  key: string;
+  title: string;
+  summary: string;
+  kind?: 'CODE' | 'DOCUMENTATION' | 'VALIDATION' | 'OTHER';
+  scope?: WorkItemScope;
+};
+
+export type CreateTaskInput = {
+  projectKey: string;
+  type: TaskType;
+  key: string;
+  title: string;
+  summary: string;
+  templateKey?: string;
+  templateVersion?: number;
+  kind?: 'CODE' | 'DOCUMENTATION' | 'VALIDATION' | 'OTHER';
+  scope?: WorkItemScope;
 };
 
 export type UseCaseInput = {
@@ -304,6 +328,7 @@ export type ListFeaturesInput = {
   projectKey: string;
   featureKey?: string;
   includeItems?: boolean;
+  taskType?: TaskType;
 };
 
 export type ListRepositoriesInput = {
@@ -535,6 +560,7 @@ export type PlanCheckResult = {
     key: string;
     name: string;
     summary: string;
+    taskType: TaskType;
   };
   policy: SliceSizePolicy;
   summary: {
@@ -600,6 +626,7 @@ export type DashboardCatalogItem = {
   state: string;
   position: number;
   parentItemKey?: string;
+  taskType?: TaskType;
 };
 
 export type FeatureExecutionStatus = 'EMPTY' | 'OPEN' | 'COMPLETED';
@@ -613,6 +640,7 @@ export type FeatureExecutionCounts = {
 export type DashboardCatalogFeature = {
   key: string;
   name: string;
+  taskType: TaskType;
   status: string;
   currentPhaseKey?: string;
   executionStatus: FeatureExecutionStatus;
@@ -709,6 +737,7 @@ export type DashboardSnapshot = {
     key: string;
     name: string;
     summary: string;
+    taskType: TaskType;
     status: string;
     executionStatus: FeatureExecutionStatus;
     executionCounts: FeatureExecutionCounts;
@@ -725,6 +754,7 @@ export type DashboardSnapshot = {
     title: string;
     phaseKey: string;
     kind: string;
+    taskType: TaskType;
     state: string;
     summary?: string | null;
     tddPolicy: string;

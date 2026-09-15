@@ -48,6 +48,8 @@ import type {
   CreateProjectInput,
   CreateTemplateInput,
   DefineWorkItemInput,
+  CreatePointTaskInput,
+  CreateTaskInput,
   ConfirmStructuralRedInput,
   InvalidateGreenInput,
   ListValidationsInput,
@@ -87,6 +89,7 @@ import type {
 } from './types.js';
 
 const LOG_RETENTION_DAYS = 7;
+const POINT_TASK_TEMPLATE_KEY = '__workflow-point-task';
 
 type WorkItemWithFeature = WorkItem & {
   feature: Feature;
@@ -224,8 +227,144 @@ export class WorkflowLedger {
         key: input.key,
         name: input.name,
         summary: input.summary,
+        taskType: 'FEATURE',
         currentPhaseKey: undefined,
       },
+    });
+  }
+
+  async createPointTask(input: CreatePointTaskInput) {
+    if (!input.key.trim()) {
+      fail('TASK_KEY_REQUIRED');
+    }
+
+    if (!input.title.trim()) {
+      fail('TASK_TITLE_REQUIRED');
+    }
+
+    if (!input.summary.trim()) {
+      fail('TASK_SUMMARY_REQUIRED');
+    }
+
+    const scopeIssues = input.scope ? validateWorkItemScope(input.scope) : [];
+    if (scopeIssues.length) {
+      fail(scopeIssues[0].code);
+    }
+
+    const project = await this.requireProject(input.projectKey);
+    const kind = input.kind ?? 'CODE';
+
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, project.id);
+
+      const existing = await transaction.feature.findFirst({
+        where: { projectId: project.id, key: input.key.trim() },
+      });
+      if (existing) {
+        fail('TASK_KEY_EXISTS');
+      }
+
+      if (input.scope) {
+        const declaredRepositoryKeys = input.scope.repositories.map((repository) => repository.repositoryKey);
+        const repositories = await transaction.repository.findMany({
+          where: {
+            projectId: project.id,
+            key: { in: declaredRepositoryKeys },
+          },
+          select: { key: true },
+        });
+        if (repositories.length !== declaredRepositoryKeys.length) {
+          fail('SCOPE_REPOSITORY_NOT_FOUND');
+        }
+      }
+
+      let template = await transaction.workflowTemplateVersion.findFirst({
+        where: { projectId: project.id, key: POINT_TASK_TEMPLATE_KEY },
+        orderBy: { version: 'desc' },
+      });
+      if (!template) {
+        template = await transaction.workflowTemplateVersion.create({
+          data: {
+            projectId: project.id,
+            key: POINT_TASK_TEMPLATE_KEY,
+            version: 1,
+            name: 'Tarefa pontual',
+            definitionJson: encodeJson({
+              taskType: 'PATCH',
+              slicePolicy: DEFAULT_SLICE_SIZE_POLICY,
+            }),
+          },
+        });
+      }
+
+      const feature = await transaction.feature.create({
+        data: {
+          projectId: project.id,
+          templateId: template.id,
+          key: input.key.trim(),
+          name: input.title.trim(),
+          summary: input.summary.trim(),
+          taskType: 'PATCH',
+          currentPhaseKey: 'PATCH',
+        },
+      });
+      const item = await transaction.workItem.create({
+        data: {
+          featureId: feature.id,
+          key: '01',
+          phaseKey: 'PATCH',
+          position: 1,
+          title: input.title.trim(),
+          kind,
+          taskType: 'PATCH',
+          state: 'READY',
+          summary: input.summary.trim(),
+          requirementsComplete: true,
+          tddPolicy: 'EXEMPT',
+          scopeJson: input.scope ? encodeJson(input.scope) : undefined,
+        },
+      });
+
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: project.id,
+          featureId: feature.id,
+          workItemId: item.id,
+          type: 'TASK_CREATED',
+          payloadJson: encodeJson({
+            taskType: 'PATCH',
+            key: feature.key,
+            itemKey: item.key,
+            kind,
+          }),
+        },
+      });
+
+      return { feature, item };
+    });
+  }
+
+  async createTask(input: CreateTaskInput) {
+    if (input.type === 'PATCH') {
+      return this.createPointTask(input);
+    }
+
+    if (input.type !== 'FEATURE') {
+      fail('TASK_TYPE_INVALID', 'Tipo de tarefa inválido. Use FEATURE ou PATCH.');
+    }
+
+    const templateKey = input.templateKey?.trim() ?? '';
+    if (!templateKey) {
+      fail('TASK_TEMPLATE_REQUIRED', 'FEATURE exige um template; PATCH não exige template.');
+    }
+
+    return this.createFeature({
+      projectKey: input.projectKey,
+      templateKey,
+      templateVersion: input.templateVersion,
+      key: input.key,
+      name: input.title,
+      summary: input.summary,
     });
   }
 
@@ -333,6 +472,7 @@ export class WorkflowLedger {
           position: input.position,
           title: input.title,
           kind,
+          taskType: feature.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
           summary: input.summary,
           tddPolicy,
           parentItemId,
@@ -2881,8 +3021,12 @@ export class WorkflowLedger {
           featureKey: item.feature.key,
           phaseKey: item.phaseKey,
           itemKey: item.key,
+          taskType: item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
           state: item.state,
-          nextAllowedTransition: this.nextAllowedTransition(item.state as WorkItemState),
+          nextAllowedTransition: this.nextAllowedTransition(
+            item.state as WorkItemState,
+            item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
+          ),
         },
         currentEvidence: {
           outcome: currentClose?.reason ?? item.summary ?? item.title,
@@ -3070,6 +3214,7 @@ export class WorkflowLedger {
         title: item.title,
         phaseKey: item.phaseKey,
         kind: item.kind,
+        taskType: item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
         state: item.state,
         summary: item.summary,
         tddPolicy: item.tddPolicy,
@@ -3209,12 +3354,14 @@ export class WorkflowLedger {
       where: {
         projectId: project.id,
         ...(request.featureKey ? { key: request.featureKey } : {}),
+        ...(request.taskType ? { taskType: request.taskType } : {}),
       },
       orderBy: { key: 'asc' },
       select: {
         key: true,
         name: true,
         summary: true,
+        taskType: true,
         status: true,
         currentPhaseKey: true,
         items: {
@@ -3240,6 +3387,7 @@ export class WorkflowLedger {
           key: feature.key,
           name: feature.name,
           summary: feature.summary,
+          taskType: feature.taskType === 'PATCH' ? 'PATCH' as const : 'FEATURE' as const,
           status: feature.status,
           currentPhaseKey: feature.currentPhaseKey,
           ...deriveFeatureExecution(feature.items),
@@ -3436,27 +3584,42 @@ export class WorkflowLedger {
     const auditedItems = items.map((item) => {
       const scope = decodeWorkItemScope(item.scopeJson);
       const scopeIssues = scope ? validateWorkItemScope(scope).map((issue) => issue.message) : [];
-      const semantic = assessPlanSemantics({
-        useCases: item.useCases,
-        criteria: item.criteria.map((criterion) => ({
-          key: criterion.key,
-          useCaseKey: criterion.useCase?.key,
-        })),
-        tests: item.tests.map((test) => ({
-          key: test.key,
-          criterionKey: test.criterion?.key,
-        })),
-        requiresTests: item.kind === 'CODE' && item.tddPolicy === 'REQUIRED',
-      });
       const repositoryCount = scope
         ? scope.repositories.length
         : new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
-      const assessment = assessSliceSize({
-        useCases: item.useCases.length,
-        requiredCriteria: item.criteria.length,
-        tests: item.tests.length,
-        repositories: repositoryCount,
-      }, policy);
+      const semantic = currentFeature.taskType === 'PATCH'
+        ? { status: 'OK' as const, issues: [] }
+        : assessPlanSemantics({
+            useCases: item.useCases,
+            criteria: item.criteria.map((criterion) => ({
+              key: criterion.key,
+              useCaseKey: criterion.useCase?.key,
+            })),
+            tests: item.tests.map((test) => ({
+              key: test.key,
+              criterionKey: test.criterion?.key,
+            })),
+            requiresTests: item.kind === 'CODE' && item.tddPolicy === 'REQUIRED',
+          });
+      const assessment = currentFeature.taskType === 'PATCH'
+        ? {
+            status: 'OK' as const,
+            score: 0,
+            metrics: {
+              useCases: item.useCases.length,
+              requiredCriteria: item.criteria.length,
+              tests: item.tests.length,
+              repositories: repositoryCount,
+            },
+            violations: [],
+            suggestions: [],
+          }
+        : assessSliceSize({
+            useCases: item.useCases.length,
+            requiredCriteria: item.criteria.length,
+            tests: item.tests.length,
+            repositories: repositoryCount,
+          }, policy);
 
       return {
         key: item.key,
@@ -3487,6 +3650,7 @@ export class WorkflowLedger {
         key: currentFeature.key,
         name: currentFeature.name,
         summary: currentFeature.summary,
+        taskType: currentFeature.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
       },
       policy,
       summary: {
@@ -4304,6 +4468,7 @@ export class WorkflowLedger {
         : undefined;
 
     return {
+      taskType: item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
       requirementsComplete: item.requirementsComplete,
       authorized: Boolean(authorization),
       testsDefined: tests > 0 || item.tddPolicy !== 'REQUIRED',
@@ -4489,11 +4654,14 @@ export class WorkflowLedger {
     };
   }
 
-  private nextAllowedTransition(state: WorkItemState): string | undefined {
+  private nextAllowedTransition(
+    state: WorkItemState,
+    taskType: 'FEATURE' | 'PATCH' = 'FEATURE',
+  ): string | undefined {
     const transitions: Partial<Record<WorkItemState, string>> = {
       DRAFT: 'READY',
       READY: 'AUTHORIZED',
-      AUTHORIZED: 'TESTS_DEFINED',
+      AUTHORIZED: taskType === 'PATCH' ? 'IMPLEMENTING' : 'TESTS_DEFINED',
       TESTS_DEFINED: 'RED_CONFIRMED',
       RED_CONFIRMED: 'IMPLEMENTING',
       TDD_EXCEPTION_APPROVED: 'IMPLEMENTING',

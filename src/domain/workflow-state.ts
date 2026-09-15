@@ -18,6 +18,7 @@ export const workItemStates = [
 export type WorkItemState = (typeof workItemStates)[number];
 
 export type TransitionContext = {
+  taskType?: 'FEATURE' | 'PATCH';
   requirementsComplete?: boolean;
   authorized?: boolean;
   testsDefined?: boolean;
@@ -134,6 +135,14 @@ export class WorkflowStateMachine {
     if (from === 'AUTHORIZED' && to === 'TESTS_DEFINED') {
       if (!context.testsDefined) {
         transitionError('TESTS_REQUIRED');
+      }
+
+      return;
+    }
+
+    if (from === 'AUTHORIZED' && to === 'IMPLEMENTING') {
+      if (context.taskType !== 'PATCH') {
+        transitionError(`INVALID_TRANSITION:${from}:${to}`);
       }
 
       return;

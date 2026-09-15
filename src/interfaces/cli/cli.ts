@@ -139,6 +139,68 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       }), stdout);
     });
 
+  const task = program.command('task').description('Cria e consulta tarefas FEATURE ou PATCH');
+  task
+    .command('create')
+    .description('FEATURE usa o modelo atual; PATCH cria uma mudança pontual já pronta para autorização')
+    .requiredOption('--project <key>')
+    .requiredOption('--type <type>', 'FEATURE|PATCH')
+    .requiredOption('--key <key>')
+    .requiredOption('--title <title>')
+    .requiredOption('--summary <summary>')
+    .option('--template <key>', 'template obrigatório para FEATURE')
+    .option('--version <number>', 'versão do template para FEATURE', parseNumber)
+    .option('--kind <kind>', 'CODE|DOCUMENTATION|VALIDATION|OTHER', 'CODE')
+    .option('--scope <json>', 'escopo técnico com repositórios e padrões de caminho')
+    .action(async (options, command) => {
+      const taskType = String(options.type).toUpperCase();
+      if (taskType !== 'FEATURE' && taskType !== 'PATCH') {
+        throw new WorkflowApplicationError('TASK_TYPE_INVALID', 'Tipo de tarefa inválido. Use FEATURE ou PATCH.');
+      }
+      emit(command, await app.ledger.createTask({
+        projectKey: options.project,
+        type: taskType as 'FEATURE' | 'PATCH',
+        templateKey: options.template,
+        templateVersion: options.version,
+        key: options.key,
+        title: options.title,
+        summary: options.summary,
+        kind: options.kind,
+        scope: options.scope ? parseJson(options.scope, 'scope') : undefined,
+      }), stdout);
+    });
+
+  task
+    .command('list')
+    .description('Lista tarefas por tipo; sem filtro, lista FEATURE e PATCH')
+    .requiredOption('--project <key>')
+    .option('--type <type>', 'FEATURE|PATCH')
+    .option('--include-items', 'inclui as etapas')
+    .action(async (options, command) => {
+      const taskType = options.type ? String(options.type).toUpperCase() : undefined;
+      if (taskType && taskType !== 'FEATURE' && taskType !== 'PATCH') {
+        throw new WorkflowApplicationError('TASK_TYPE_INVALID', 'Tipo de tarefa inválido. Use FEATURE ou PATCH.');
+      }
+      emit(command, await app.ledger.listFeatures({
+        projectKey: options.project,
+        taskType: taskType as 'FEATURE' | 'PATCH' | undefined,
+        includeItems: options.includeItems ?? false,
+      }), stdout);
+    });
+
+  task
+    .command('show')
+    .description('Mostra uma tarefa e suas etapas')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.listFeatures({
+        projectKey: options.project,
+        featureKey: options.key,
+        includeItems: true,
+      }), stdout);
+    });
+
   program
     .command('frontier')
     .description('Mostra a fronteira de trabalho acionável e o próximo comando de cada folha')

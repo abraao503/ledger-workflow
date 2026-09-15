@@ -4,6 +4,7 @@ export type WorkflowContextInput = {
     featureKey: string;
     phaseKey: string;
     itemKey: string;
+    taskType?: 'FEATURE' | 'PATCH';
     state: string;
     nextAllowedTransition?: string;
   };

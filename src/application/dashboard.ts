@@ -41,6 +41,7 @@ export class DashboardService {
           select: {
             key: true,
             name: true,
+            taskType: true,
             status: true,
           currentPhaseKey: true,
           items: {
@@ -54,6 +55,7 @@ export class DashboardService {
               phaseKey: true,
               state: true,
               position: true,
+              taskType: true,
             },
           },
           },
@@ -68,11 +70,13 @@ export class DashboardService {
       features: project.features.map((feature) => ({
         key: feature.key,
         name: feature.name,
+        taskType: feature.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
         status: feature.status,
         currentPhaseKey: feature.currentPhaseKey ?? undefined,
         ...deriveFeatureExecution(feature.items),
         items: feature.items.map(({ id: _id, parentItemId: _parentItemId, parentItem, ...item }) => ({
           ...item,
+          taskType: item.taskType === 'PATCH' ? 'PATCH' as const : 'FEATURE' as const,
           ...(parentItem ? { parentItemKey: parentItem.key } : {}),
         })),
       })),
@@ -280,6 +284,7 @@ export class DashboardService {
         key: currentFeature.key,
         name: currentFeature.name,
         summary: currentFeature.summary,
+        taskType: currentFeature.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
         status: currentFeature.status,
         ...currentExecution,
       },
@@ -290,7 +295,10 @@ export class DashboardService {
         openItems,
         walMode: health.journalMode,
       },
-      item: record.item,
+      item: {
+        ...record.item,
+        taskType: record.item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
+      },
       gates: makeGates(item.state),
       context: context as unknown as Record<string, unknown>,
       record: record as unknown as Record<string, unknown>,
@@ -334,6 +342,7 @@ export class DashboardService {
       },
       availableActions: makeActions({
         state: item.state,
+        taskType: item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
         requirementsComplete: item.requirementsComplete,
         testsDefined: record.tests.length > 0 || item.tddPolicy !== 'REQUIRED',
         tddPolicy: item.tddPolicy,
@@ -389,6 +398,7 @@ function makeGates(state: string): DashboardGate[] {
 
 function makeActions(input: {
   state: string;
+  taskType: 'FEATURE' | 'PATCH';
   requirementsComplete: boolean;
   testsDefined: boolean;
   tddPolicy: string;
@@ -452,7 +462,10 @@ function makeActions(input: {
   });
   add({
     id: 'START_IMPLEMENTING', label: 'Iniciar implementação', kind: 'primary',
-    enabled: ['RED_CONFIRMED', 'TDD_EXCEPTION_APPROVED'].includes(input.state) && activeFence,
+    enabled: (
+      ['RED_CONFIRMED', 'TDD_EXCEPTION_APPROVED'].includes(input.state)
+      || (input.taskType === 'PATCH' && input.state === 'AUTHORIZED')
+    ) && activeFence,
   });
   add({
     id: 'RUN_GREEN', label: 'Executar validação GREEN', kind: 'primary',

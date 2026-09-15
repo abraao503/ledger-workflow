@@ -77,6 +77,7 @@ model Feature {
   key          String
   name         String
   summary      String
+  taskType     String                   @default("FEATURE")
   status       String                   @default("ACTIVE")
   currentPhaseKey String?
   createdAt    DateTime                 @default(now())
@@ -100,6 +101,7 @@ model WorkItem {
   position            Int
   title               String
   kind                String                 @default("CODE")
+  taskType            String                 @default("FEATURE")
   state               String                 @default("DRAFT")
   summary             String?
   requirementsComplete Boolean               @default(false)

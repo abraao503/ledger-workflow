@@ -76,6 +76,40 @@ features identifica duas fatias diferentes.
 Fases ou gates, como `G3` e `G6`, marcam momentos do ciclo. Eles não são
 features, fatias nem estados.
 
+### Tipos de tarefa
+
+O ledger aceita dois tipos de tarefa:
+
+- **`FEATURE`**: usa o modelo atual, com template, uma ou mais fatias,
+  planejamento de granularidade, casos de uso, critérios, testes e RED;
+- **`PATCH`**: representa uma modificação pontual. É criada como uma tarefa
+  única, já em `READY`, sem template público, casos de uso, critérios, auditoria
+  de tamanho, definição de testes ou RED.
+
+`PATCH` mantém os controles que protegem a execução: autorização humana,
+baseline Git, lease, GREEN, revisão e commit. Depois de reivindicada, ela pode
+ir diretamente de `AUTHORIZED` para `IMPLEMENTING`:
+
+```bash
+node dist/interfaces/cli/main.js task create \
+  --project <project-key> --type PATCH --key <task-key> \
+  --title "Ajustar rótulo" --summary "Correção pontual"
+node dist/interfaces/cli/main.js item authorize \
+  --project <project-key> --feature <task-key> --item 01 \
+  --instruction "Aplicar somente o ajuste" --actor human:<identidade> \
+  --repositories <repository-key>
+node dist/interfaces/cli/main.js item claim \
+  --project <project-key> --feature <task-key> --item 01 \
+  --holder agent:<identidade>
+node dist/interfaces/cli/main.js item transition \
+  --project <project-key> --feature <task-key> --item 01 \
+  --to IMPLEMENTING --fence <generation>
+```
+
+Use `task list --project <project-key>` para consultar os dois tipos. O comando
+`task create --type FEATURE` continua disponível como atalho para o modelo
+atual, mas exige `--template`.
+
 ### O ciclo de uma entrega
 
 ```mermaid
