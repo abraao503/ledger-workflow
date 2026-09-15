@@ -100,6 +100,58 @@ No MCP, consulte primeiro `workflow_list_projects`, `workflow_list_features`,
 `workflow_list_repositories`, `workflow_list_decisions` e
 `workflow_list_pending`. Depois use `workflow_context` e `workflow_record`.
 
+## Classificação: FEATURE ou PATCH
+
+Faça esta classificação antes de escolher a fatia. Ela é uma decisão
+operacional do agente, não uma preferência de nomenclatura:
+
+- **PATCH** é uma modificação pontual com um único resultado verificável e
+  escopo pequeno. Use-o para correção isolada, ajuste de configuração,
+  alteração localizada de documentação, texto, estilo ou comportamento que
+  possa ser implementado e revisado em uma única unidade de trabalho, sem
+  dependências, orquestração ou várias fases.
+- **FEATURE** é o modelo completo para capacidade nova ou trabalho que exige
+  descoberta, vários resultados, mais de uma fatia, dependências entre fatias,
+  gates/fases, coordenação entre agentes ou mudança relevante de contrato,
+  domínio, produto ou mais de um repositório.
+
+Use estas perguntas como teste rápido para `PATCH`:
+
+1. Existe um único objetivo e um único resultado de entrega?
+2. O trabalho cabe em uma unidade autorizada e revisável?
+3. Não é necessário dividir casos de uso, critérios, testes ou dependências
+   para controlar a execução?
+4. O escopo pode ser declarado com poucos caminhos e efeitos claros?
+
+Se todas as respostas forem sim, abra `PATCH`. Se qualquer resposta for não,
+abra `FEATURE`. Quando ainda houver dúvida, escolha `FEATURE`; não use
+`PATCH` para esconder incerteza ou uma mudança grande.
+
+Para uma modificação pontual, use o caminho enxuto:
+
+```bash
+rtk node dist/interfaces/cli/main.js task create \
+  --project <project-key> --type PATCH --key <task-key> \
+  --title "<título>" --summary "<resultado>" \
+  --scope '{"repositories":[{"repositoryKey":"<repo>","paths":["<path>"]}]}'
+```
+
+Esse comando cria uma tarefa `PATCH` com uma única fatia já `READY`, sem
+template, sem decomposição de casos, critérios ou testes e com
+`tddPolicy: EXEMPT`.
+O agente ainda deve consultar o contexto, obter autorização explícita,
+reservar a fatia, trabalhar somente no escopo autorizado, executar GREEN,
+revisar, commitar e fechar a fatia. Em `PATCH`, não invente `plan check`, RED,
+casos de uso ou testes artificiais apenas para reproduzir o protocolo de
+`FEATURE`; registre validação proporcional ao arquivo e ao comportamento
+alterados.
+
+Para uma capacidade ou frente de produto, use `FEATURE` e o fluxo completo de
+criação de feature, definição de fatias, `plan check`, testes definidos, RED,
+implementação, GREEN, revisão, commit e fechamento. O atalho `task create
+--type FEATURE` também é válido quando houver um template apropriado; ele não
+transforma uma feature em `PATCH` nem elimina os gates do modelo completo.
+
 ## Descoberta compacta e contexto mínimo
 
 Comece sempre pela menor projeção que responde à pergunta. A sequência
