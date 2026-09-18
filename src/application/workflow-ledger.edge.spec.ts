@@ -493,6 +493,87 @@ describe('WorkflowLedger edge cases', () => {
     })).resolves.toMatchObject({ state: 'READY' });
   });
 
+  it('enforces risk coverage before READY and freezes the authorized risk contract', async () => {
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: 'risk-incomplete',
+      program: 'npm',
+      args: ['test'],
+      parser: 'GENERIC',
+      capabilities: ['API_INTEGRATION'],
+    });
+    await ledger.defineWorkItem({
+      ...definition('risk-missing'),
+      riskTags: ['API_WRITE'],
+      tests: [{
+        key: 'T-01',
+        name: 'teste incompleto',
+        purpose: 'RED',
+        runnerProfileKey: 'risk-incomplete',
+      }],
+    });
+
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'risk-missing',
+      to: 'READY',
+    })).rejects.toMatchObject({ code: 'VALIDATION_PLAN_INCOMPLETE' });
+
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: 'risk-complete',
+      program: 'npm',
+      args: ['test'],
+      parser: 'GENERIC',
+      capabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+    });
+    await ledger.defineWorkItem({
+      ...definition('risk-complete'),
+      riskTags: ['API_WRITE'],
+      criteria: [{
+        key: 'AC-01',
+        statement: 'critério observável',
+        useCaseKey: 'UC-01',
+        evidenceKind: 'PERSISTENCE',
+      }],
+      tests: [{
+        key: 'T-01',
+        name: 'teste completo',
+        purpose: 'RED',
+        runnerProfileKey: 'risk-complete',
+        criterionKey: 'AC-01',
+      }],
+    });
+    const riskPlan = await ledger.checkPlan({ projectKey: 'edge', featureKey: 'F1' });
+    expect(riskPlan.items.find((candidate) => candidate.key === 'risk-complete')?.semanticIssues).toEqual([]);
+    expect(riskPlan.items.find((candidate) => candidate.key === 'risk-complete')).toMatchObject({
+      semanticStatus: 'OK',
+      validationStatus: 'OK',
+    });
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'risk-complete',
+      to: 'READY',
+    })).resolves.toMatchObject({ state: 'READY' });
+
+    const authorization = await authorize('risk-complete');
+    await client.workItem.update({
+      where: { id: authorization.item.id },
+      data: { riskTagsJson: '["API_WRITE","DATABASE"]' },
+    });
+
+    await expect(ledger.transitionWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      itemKey: 'risk-complete',
+      to: 'TESTS_DEFINED',
+    })).rejects.toMatchObject({ code: 'RISK_CONTRACT_CHANGED' });
+  });
+
   it('keeps summaries while compacting only old closed details', async () => {
     for (const itemKey of ['dirty', 'branch', 'duplicate']) {
       await client.workItem.updateMany({
@@ -517,6 +598,8 @@ describe('WorkflowLedger edge cases', () => {
       'duplicate',
       'empty',
       'review',
+      'risk-missing',
+      'risk-complete',
       'coding-without-tests',
       'documentation-without-tests',
     ]);

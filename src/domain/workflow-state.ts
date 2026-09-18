@@ -45,6 +45,9 @@ export type TransitionContext = {
   replanReason?: string;
   sliceSizeStatus?: 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED';
   sliceSizeApproved?: boolean;
+  validationPlanComplete?: boolean;
+  validationEvidenceComplete?: boolean;
+  riskContractStable?: boolean;
 };
 
 export class WorkflowTransitionError extends Error {
@@ -108,9 +111,21 @@ export class WorkflowStateMachine {
       transitionError('BLOCKED_ITEM_REQUIRES_REOPENING');
     }
 
+    if (
+      context.riskContractStable === false &&
+      ['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING', 'GREEN_CONFIRMED', 'READY_FOR_REVIEW']
+        .includes(from)
+    ) {
+      transitionError('RISK_CONTRACT_CHANGED');
+    }
+
     if (from === 'DRAFT' && to === 'READY') {
       if (!context.requirementsComplete) {
         transitionError('REQUIREMENTS_INCOMPLETE');
+      }
+
+      if (context.validationPlanComplete === false) {
+        transitionError('VALIDATION_PLAN_INCOMPLETE');
       }
 
       if (
@@ -135,6 +150,10 @@ export class WorkflowStateMachine {
     if (from === 'AUTHORIZED' && to === 'TESTS_DEFINED') {
       if (!context.testsDefined) {
         transitionError('TESTS_REQUIRED');
+      }
+
+      if (context.riskContractStable === false) {
+        transitionError('RISK_CONTRACT_CHANGED');
       }
 
       return;
@@ -190,11 +209,19 @@ export class WorkflowStateMachine {
     }
 
     if (from === 'IMPLEMENTING' && to === 'GREEN_CONFIRMED') {
+      if (context.validationEvidenceComplete === false) {
+        transitionError('VALIDATION_EVIDENCE_INCOMPLETE');
+      }
+
       assertGreenEvidenceCurrent(context);
       return;
     }
 
     if (from === 'GREEN_CONFIRMED' && to === 'READY_FOR_REVIEW') {
+      if (context.validationEvidenceComplete === false) {
+        transitionError('VALIDATION_EVIDENCE_INCOMPLETE');
+      }
+
       assertGreenEvidenceCurrent(context);
       return;
     }

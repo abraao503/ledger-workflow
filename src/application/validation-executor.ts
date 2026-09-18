@@ -194,6 +194,7 @@ export class ValidationExecutor {
           summary: {
             parser: currentProfile.parser,
             profileKey: input.profileKey,
+            validationCapabilities: decodeJson<string[]>(currentProfile.capabilitiesJson, []),
             fingerprint: snapshotBefore.fingerprint,
             ...(snapshotBefore.contentFingerprint
               ? { contentFingerprint: snapshotBefore.contentFingerprint }
@@ -255,6 +256,7 @@ export class ValidationExecutor {
       summary: {
         parser,
         profileKey: input.profileKey,
+        validationCapabilities: decodeJson<string[]>(currentProfile.capabilitiesJson, []),
         program: currentProfile.program,
         args: decodeJson<string[]>(currentProfile.argsJson, []),
         cwd: currentProfile.cwd,

@@ -33,7 +33,10 @@ import {
   validateWorkItemScope,
 } from '../domain/work-item-scope.js';
 import { assessPlanSemantics } from '../domain/planning-semantics.js';
-import { assessValidationCoverage } from '../domain/validation-requirements.js';
+import {
+  assessValidationCoverage,
+  deriveValidationRequirements,
+} from '../domain/validation-requirements.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
@@ -767,6 +770,10 @@ export class WorkflowLedger {
             actor: input.actor,
             repositoryCount: baselines.length,
             executionMode,
+            riskTags: decodeJson<string[]>(item.riskTagsJson, []),
+            requiredCapabilities: deriveValidationRequirements(
+              decodeJson<string[]>(item.riskTagsJson, []),
+            ).requiredCapabilities,
           }),
         },
       });
@@ -4478,7 +4485,7 @@ export class WorkflowLedger {
   ): Promise<TransitionContext> {
     const usesGreenEvidence = ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED', 'CLOSED']
       .includes(input.to);
-    const [authorization, tests, red, review, greenContext, sliceSizeContext] = await Promise.all([
+    const [authorization, tests, red, review, greenContext, sliceSizeContext, validationContext] = await Promise.all([
       this.db.authorization.findFirst({
         where: { workItemId: item.id },
         orderBy: { createdAt: 'desc' },
@@ -4506,6 +4513,7 @@ export class WorkflowLedger {
             status: undefined as 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED' | undefined,
             approved: false,
           }),
+      this.getValidationTransitionContext(item, input.to),
     ]);
 
     const redEvidence = red?.resultKind === 'TEST_FAILURE' ? red : undefined;
@@ -4582,6 +4590,134 @@ export class WorkflowLedger {
       blockReason: input.reason,
       sliceSizeStatus: sliceSizeContext.status,
       sliceSizeApproved: sliceSizeContext.approved,
+      validationPlanComplete: validationContext.validationPlanComplete,
+      validationEvidenceComplete: validationContext.validationEvidenceComplete,
+      riskContractStable: validationContext.riskContractStable,
+    };
+  }
+
+  private async getValidationTransitionContext(
+    item: WorkItemWithFeature,
+    target: WorkItemState,
+  ): Promise<{
+    validationPlanComplete: boolean;
+    validationEvidenceComplete: boolean;
+    riskContractStable: boolean;
+  }> {
+    const riskTags = decodeJson<string[]>(item.riskTagsJson, []);
+    const requirements = deriveValidationRequirements(riskTags);
+    const hasRiskContract = riskTags.length > 0 || requirements.unknownRiskTags.length > 0;
+    let validationPlanComplete = true;
+
+    if (hasRiskContract) {
+      const project = await this.db.project.findUnique({ where: { id: item.feature.projectId } });
+      if (!project) {
+        fail('PROJECT_NOT_FOUND');
+      }
+
+      const plan = await this.checkPlan({
+        projectKey: (project as NonNullable<typeof project>).key,
+        featureKey: item.feature.key,
+      });
+      const auditedItem = plan.items.find((candidate) => candidate.key === item.key);
+      validationPlanComplete = Boolean(
+        auditedItem &&
+        auditedItem.semanticStatus === 'OK' &&
+        auditedItem.validationStatus === 'OK',
+      );
+    }
+
+    const requiresValidationEvidence = [
+      'GREEN_CONFIRMED',
+      'READY_FOR_REVIEW',
+    ].includes(target);
+    const validationEvidenceComplete = !requiresValidationEvidence || !hasRiskContract
+      ? true
+      : (await this.getRequiredCapabilityEvidence(item)).complete;
+
+    const authorizationEvent = await this.db.workflowEvent.findFirst({
+      where: { workItemId: item.id, type: 'ITEM_AUTHORIZED' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const authorizationPayload = authorizationEvent
+      ? decodeJson<{ riskTags?: string[]; requiredCapabilities?: string[] }>(
+          authorizationEvent.payloadJson,
+          {},
+        )
+      : {};
+    const riskContractStable = !authorizationEvent || !authorizationPayload.riskTags
+      ? true
+      : JSON.stringify(authorizationPayload.riskTags) === JSON.stringify(riskTags) &&
+        JSON.stringify(authorizationPayload.requiredCapabilities ?? []) === JSON.stringify(
+          requirements.requiredCapabilities,
+        );
+
+    return {
+      validationPlanComplete,
+      validationEvidenceComplete,
+      riskContractStable,
+    };
+  }
+
+  private async getRequiredCapabilityEvidence(item: WorkItemWithFeature): Promise<{
+    complete: boolean;
+    missingCapabilities: string[];
+  }> {
+    const requirements = deriveValidationRequirements(
+      decodeJson<string[]>(item.riskTagsJson, []),
+    );
+    if (requirements.unknownRiskTags.length) {
+      return { complete: false, missingCapabilities: requirements.requiredCapabilities };
+    }
+    if (!requirements.requiredCapabilities.length) {
+      return { complete: true, missingCapabilities: [] };
+    }
+
+    const validations = await this.db.validationRun.findMany({
+      where: {
+        workItemId: item.id,
+        purpose: 'GREEN',
+        resultKind: 'PASS',
+      },
+      include: { profile: { include: { repository: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const repositories = new Map<string, { id: string; key: string; path: string }>();
+    for (const validation of validations) {
+      repositories.set(validation.profile.repository.id, validation.profile.repository);
+    }
+    const currentSnapshots = new Map<string, Awaited<ReturnType<GitReadPort['capture']>>>();
+    for (const repository of repositories.values()) {
+      const executionPath = await this.getExecutionRepositoryPathById(
+        item.id,
+        repository.id,
+        repository.path,
+      );
+      currentSnapshots.set(repository.id, await this.git.capture(executionPath));
+    }
+
+    const coveredCapabilities = new Set<string>();
+    for (const validation of validations) {
+      const summary = decodeJson<{ fingerprint?: string; contentFingerprint?: string }>(
+        validation.summaryJson,
+        {},
+      );
+      const currentSnapshot = currentSnapshots.get(validation.profile.repository.id);
+      if (!currentSnapshot || !matchesGreenSnapshot(summary, validation, currentSnapshot)) {
+        continue;
+      }
+
+      for (const capability of decodeJson<string[]>(validation.profile.capabilitiesJson, [])) {
+        coveredCapabilities.add(capability);
+      }
+    }
+
+    const missingCapabilities = requirements.requiredCapabilities.filter(
+      (capability) => !coveredCapabilities.has(capability),
+    );
+    return {
+      complete: missingCapabilities.length === 0,
+      missingCapabilities,
     };
   }
 

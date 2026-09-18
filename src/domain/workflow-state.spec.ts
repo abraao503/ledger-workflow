@@ -75,6 +75,32 @@ describe('WorkflowStateMachine', () => {
     ).toThrow('RED_EVIDENCE_REQUIRED');
   });
 
+  it('rejects a risk plan with uncovered capabilities before READY', () => {
+    expect(() => machine.assertTransition('DRAFT', 'READY', {
+      ...baseContext(),
+      validationPlanComplete: false,
+    })).toThrow('VALIDATION_PLAN_INCOMPLETE');
+  });
+
+  it('requires current validation evidence for every risk capability', () => {
+    expect(() => machine.assertTransition('IMPLEMENTING', 'GREEN_CONFIRMED', {
+      ...baseContext(),
+      validationEvidenceComplete: false,
+    })).toThrow('VALIDATION_EVIDENCE_INCOMPLETE');
+
+    expect(() => machine.assertTransition('GREEN_CONFIRMED', 'READY_FOR_REVIEW', {
+      ...baseContext(),
+      validationEvidenceComplete: false,
+    })).toThrow('VALIDATION_EVIDENCE_INCOMPLETE');
+  });
+
+  it('rejects a risk contract changed after authorization', () => {
+    expect(() => machine.assertTransition('AUTHORIZED', 'TESTS_DEFINED', {
+      ...baseContext(),
+      riskContractStable: false,
+    })).toThrow('RISK_CONTRACT_CHANGED');
+  });
+
   it('allows a documented TDD exception but requires a reason', () => {
     expect(() =>
       machine.assertTransition('TESTS_DEFINED', 'TDD_EXCEPTION_APPROVED', {
