@@ -3604,10 +3604,15 @@ export class WorkflowLedger {
       where: { featureId: currentFeature.id },
       orderBy: { position: 'asc' },
       include: {
-        useCases: { select: { key: true, expectedOutcome: true } },
+        useCases: { select: { key: true, trigger: true, expectedOutcome: true } },
         criteria: {
           where: { required: true },
-          select: { key: true, useCase: { select: { key: true } } },
+          select: {
+            key: true,
+            evidenceKind: true,
+            polarity: true,
+            useCase: { select: { key: true } },
+          },
         },
         tests: {
           select: { key: true, criterion: { select: { key: true } } },
@@ -3630,6 +3635,8 @@ export class WorkflowLedger {
             criteria: item.criteria.map((criterion) => ({
               key: criterion.key,
               useCaseKey: criterion.useCase?.key,
+              evidenceKind: criterion.evidenceKind,
+              polarity: criterion.polarity,
             })),
             tests: item.tests.map((test) => ({
               key: test.key,

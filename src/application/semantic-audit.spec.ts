@@ -108,6 +108,32 @@ describe('WorkflowLedger semantic planning audit', () => {
     await ledger.defineWorkItem({
       projectKey: 'semantic-audit',
       featureKey: 'F1',
+      key: '04',
+      phaseKey: 'G3',
+      position: 4,
+      title: 'Fatia sem jornada observável',
+      tddPolicy: 'REQUIRED',
+      useCases: [{
+        key: 'UC-01',
+        title: 'Impedir efeito proibido',
+        actor: 'Agente',
+        preconditions: 'Plano definido',
+        trigger: '  ',
+        expectedOutcome: '  ',
+      }],
+      criteria: [{
+        key: 'AC-01',
+        statement: 'O efeito proibido não ocorre',
+        useCaseKey: 'UC-01',
+        evidenceKind: 'UI',
+        polarity: 'FORBIDDEN',
+      }],
+      tests: [{ key: 'T-01', name: 'RED', purpose: 'RED', criterionKey: 'AC-01' }],
+    });
+
+    await ledger.defineWorkItem({
+      projectKey: 'semantic-audit',
+      featureKey: 'F1',
       key: '02',
       phaseKey: 'G3',
       position: 2,
@@ -172,6 +198,24 @@ describe('WorkflowLedger semantic planning audit', () => {
       semanticIssues: expect.arrayContaining([
         expect.objectContaining({ code: 'CRITERION_NOT_TRACEABLE', severity: 'ERROR' }),
         expect.objectContaining({ code: 'CRITERION_WITHOUT_TEST', severity: 'ERROR' }),
+      ]),
+    });
+  });
+
+  it('blocks non-observable journeys and explains forbidden-only outcomes', async () => {
+    const result = await ledger.checkPlan({
+      projectKey: 'semantic-audit',
+      featureKey: 'F1',
+    });
+    const item = result.items.find((candidate) => candidate.key === '04');
+
+    expect(item).toMatchObject({
+      semanticStatus: 'BLOCKED',
+      semanticIssues: expect.arrayContaining([
+        expect.objectContaining({ code: 'NO_ACTION_TRIGGER', severity: 'ERROR' }),
+        expect.objectContaining({ code: 'NO_PRIMARY_OUTCOME', severity: 'ERROR' }),
+        expect.objectContaining({ code: 'NO_OBSERVABLE_CRITERION', severity: 'ERROR' }),
+        expect.objectContaining({ code: 'FORBIDDEN_OUTCOME_WITHOUT_EXPECTED', severity: 'ERROR' }),
       ]),
     });
   });
