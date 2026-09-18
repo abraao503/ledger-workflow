@@ -245,6 +245,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--parent <key>', 'fatia original bloqueada pelo replanejamento')
     .option('--scope <json>', 'escopo técnico com repositórios e padrões de caminho')
     .option('--depends-on <dependency>', 'dependência feature:item (repetível)', collect, [])
+    .option('--risk-tags <json>', 'tags de risco')
     .requiredOption('--use-cases <json>')
     .requiredOption('--criteria <json>')
     .requiredOption('--tests <json>')
@@ -262,6 +263,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         parentItemKey: options.parent,
         scope: options.scope ? parseJson(options.scope, 'scope') : undefined,
         dependsOn: parseDependencies(options.dependsOn),
+        riskTags: options.riskTags ? parseJson(options.riskTags, 'risk-tags') : undefined,
         useCases: parseJson(options.useCases, 'use-cases'),
         criteria: parseJson(options.criteria, 'criteria'),
         tests: parseJson(options.tests, 'tests'),
@@ -635,6 +637,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--parser <parser>', 'JEST|GENERIC', 'JEST')
     .option('--timeout <seconds>', 'timeout em segundos', parseNumber)
     .option('--max-output <bytes>', 'limite de saída em bytes', parseNumber)
+    .option('--capabilities <json>', 'capacidades verificáveis')
     .action(async (options, command) => {
       emit(command, await app.ledger.createValidationProfile({
         projectKey: options.project,
@@ -646,6 +649,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         parser: options.parser,
         timeoutSeconds: options.timeout,
         maxOutputBytes: options.maxOutput,
+        capabilities: options.capabilities ? parseJson(options.capabilities, 'capabilities') : undefined,
       }), stdout);
     });
 
