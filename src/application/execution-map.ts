@@ -1,12 +1,14 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { fail } from './errors.js';
+import { decodeJson } from './json.js';
 import type {
   ExecutionMapDependency,
   ExecutionMapItem,
   ExecutionMapRequest,
   ExecutionMapResult,
 } from './types.js';
+import { assessValidationCoverage } from '../domain/validation-requirements.js';
 
 type ExecutionMapRow = {
   id: string;
@@ -14,6 +16,8 @@ type ExecutionMapRow = {
   title: string;
   state: string;
   position: number;
+  riskTagsJson: string;
+  tests: Array<{ runnerProfileKey: string | null }>;
   featureKey: string;
   parentItemId: string | null;
   childItems: Array<{ id: string }>;
@@ -57,57 +61,70 @@ export class ExecutionMapService {
     }
     const currentProject = project as NonNullable<typeof project>;
 
-    const features = await this.db.feature.findMany({
-      where: { projectId: currentProject.id },
-      orderBy: { key: 'asc' },
-      select: {
-        key: true,
-        items: {
-          orderBy: { position: 'asc' },
-          select: {
-            id: true,
-            key: true,
-            title: true,
-            state: true,
-            position: true,
-            parentItemId: true,
-            childItems: { select: { id: true } },
-            dependencies: {
-              orderBy: { createdAt: 'asc' },
-              select: {
-                dependsOnItem: {
-                  select: {
-                    key: true,
-                    title: true,
-                    state: true,
-                    feature: { select: { key: true } },
+    const [features, profiles] = await Promise.all([
+      this.db.feature.findMany({
+        where: { projectId: currentProject.id },
+        orderBy: { key: 'asc' },
+        select: {
+          key: true,
+          items: {
+            orderBy: { position: 'asc' },
+            select: {
+              id: true,
+              key: true,
+              title: true,
+              state: true,
+              position: true,
+              riskTagsJson: true,
+              tests: { select: { runnerProfileKey: true } },
+              parentItemId: true,
+              childItems: { select: { id: true } },
+              dependencies: {
+                orderBy: { createdAt: 'asc' },
+                select: {
+                  dependsOnItem: {
+                    select: {
+                      key: true,
+                      title: true,
+                      state: true,
+                      feature: { select: { key: true } },
+                    },
                   },
                 },
               },
-            },
-            dependedOnBy: {
-              orderBy: { createdAt: 'asc' },
-              select: {
-                workItem: {
-                  select: {
-                    key: true,
-                    title: true,
-                    state: true,
-                    feature: { select: { key: true } },
+              dependedOnBy: {
+                orderBy: { createdAt: 'asc' },
+                select: {
+                  workItem: {
+                    select: {
+                      key: true,
+                      title: true,
+                      state: true,
+                      feature: { select: { key: true } },
+                    },
                   },
                 },
               },
-            },
-            leases: {
-              where: { releasedAt: null },
-              orderBy: { generation: 'desc' },
-              take: 1,
-              select: { holder: true, generation: true, expiresAt: true },
+              leases: {
+                where: { releasedAt: null },
+                orderBy: { generation: 'desc' },
+                take: 1,
+                select: { holder: true, generation: true, expiresAt: true },
+              },
             },
           },
         },
-      },
-    });
+      }),
+      this.db.validationProfile.findMany({
+        where: { active: true, repository: { projectId: currentProject.id } },
+        select: { key: true, capabilitiesJson: true },
+        orderBy: { key: 'asc' },
+      }),
+    ]);
+    const validationProfiles = profiles.map((profile) => ({
+      key: profile.key,
+      capabilities: decodeJson<string[]>(profile.capabilitiesJson, []),
+    }));
 
     if (input.featureKey && !features.some((feature) => feature.key === input.featureKey)) {
       fail('FEATURE_NOT_FOUND');
@@ -173,6 +190,11 @@ export class ExecutionMapService {
     for (const row of selectedRows) {
       const lease = row.leases[0];
       const expired = Boolean(lease && lease.expiresAt <= now);
+      const validation = assessValidationCoverage({
+        riskTags: decodeJson<string[]>(row.riskTagsJson, []),
+        tests: row.tests,
+        profiles: validationProfiles,
+      });
       itemById.set(row.id, {
         featureKey: row.featureKey,
         itemKey: row.key,
@@ -182,6 +204,11 @@ export class ExecutionMapService {
         wave: row.state === 'CLOSED' ? null : getWave(row),
         dependencies: row.dependencies.map((dependency) => dependencyRef(dependency.dependsOnItem)),
         dependents: row.dependents.map((dependent) => dependencyRef(dependent.workItem)),
+        riskTags: validation.riskTags,
+        requiredCapabilities: validation.requiredCapabilities,
+        coveredCapabilities: validation.coveredCapabilities,
+        missingCapabilities: validation.missingCapabilities,
+        validationStatus: validation.status,
         ...(lease ? {
           lease: {
             holder: lease.holder,

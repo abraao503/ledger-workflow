@@ -12,6 +12,19 @@ const input = (): WorkflowContextInput => ({
     state: 'AUTHORIZED',
     nextAllowedTransition: 'TESTS_DEFINED',
   },
+  riskTags: ['API_WRITE'],
+  journey: {
+    useCases: [{ key: 'UC-01', title: 'Persistir', trigger: 'enviar', expectedOutcome: 'persistido' }],
+    criteria: [{ key: 'AC-01', statement: 'resposta persistida', evidenceKind: 'PERSISTENCE', polarity: 'EXPECTED' }],
+  },
+  validation: {
+    status: 'BLOCKED',
+    requiredCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+    coveredCapabilities: ['API_INTEGRATION'],
+    missingCapabilities: ['READ_AFTER_WRITE'],
+    unknownRiskTags: [],
+    missingProfileKeys: [],
+  },
   currentEvidence: {
     outcome: 'tools do núcleo concluídas',
     commitRef: 'commit-05',
@@ -71,6 +84,9 @@ describe('buildWorkflowContext', () => {
     expect(result.durableDecisions).toEqual(input().durableDecisions);
     expect(result.unresolvedItems).toEqual(input().unresolvedItems);
     expect(result.currentEvidence).toEqual(input().currentEvidence);
+    expect(result.riskTags).toEqual(['API_WRITE']);
+    expect(result.journey?.useCases[0].expectedOutcome).toBe('persistido');
+    expect(result.validation?.missingCapabilities).toEqual(['READ_AFTER_WRITE']);
     expect(JSON.stringify(result)).not.toContain('log');
   });
 

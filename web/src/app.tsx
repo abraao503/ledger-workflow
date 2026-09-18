@@ -18,6 +18,19 @@ type ModalState = { action: DashboardAction; logValidationId?: string; planCheck
 
 type ContextShape = {
   current?: { nextAllowedTransition?: string };
+  riskTags?: string[];
+  journey?: {
+    useCases: Array<{ key: string; title: string; trigger: string; expectedOutcome: string }>;
+    criteria: Array<{ key: string; statement: string; evidenceKind?: string; polarity?: string }>;
+  };
+  validation?: {
+    status: 'OK' | 'BLOCKED';
+    requiredCapabilities: string[];
+    coveredCapabilities: string[];
+    missingCapabilities: string[];
+    unknownRiskTags: string[];
+    missingProfileKeys: string[];
+  };
   authorization?: {
     instruction: string;
     actor?: string;
@@ -614,6 +627,38 @@ function NowView(props: {
           )}
         </section>
 
+        <section className="panel observable-contract" aria-labelledby="observable-contract-title">
+          <PanelHeader title="Contrato observável" meta={context.validation?.status === 'BLOCKED' ? 'há lacunas' : 'cobertura completa'} />
+          <h2 id="observable-contract-title" className="sr-only">Contrato observável</h2>
+          <div className="contract-section">
+            <span className="eyebrow">Riscos da fatia</span>
+            <div className="chip-row">
+              {(context.riskTags ?? []).length > 0
+                ? context.riskTags?.map((risk) => <span className="chip" key={risk}>{risk}</span>)
+                : <span className="muted-copy">Nenhum risco adicional declarado.</span>}
+            </div>
+          </div>
+          {context.journey?.useCases.length ? (
+            <div className="contract-section">
+              <span className="eyebrow">Jornada</span>
+              <ul className="journey-list">
+                {context.journey.useCases.map((useCase) => (
+                  <li key={useCase.key}><b>{useCase.key} · {useCase.title}</b><span>{useCase.trigger} → {useCase.expectedOutcome}</span></li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {context.validation && (
+            <div className={`coverage-box ${context.validation.status === 'BLOCKED' ? 'blocked' : 'covered'}`}>
+              <span className="eyebrow">Checks derivados</span>
+              <p>{context.validation.coveredCapabilities.length}/{context.validation.requiredCapabilities.length || 0} capacidades cobertas</p>
+              {context.validation.missingCapabilities.length > 0 && <strong>Lacunas: {context.validation.missingCapabilities.join(', ')}</strong>}
+              {context.validation.missingProfileKeys.length > 0 && <small>Perfis ausentes: {context.validation.missingProfileKeys.join(', ')}</small>}
+              {context.validation.unknownRiskTags.length > 0 && <small>Riscos desconhecidos: {context.validation.unknownRiskTags.join(', ')}</small>}
+            </div>
+          )}
+        </section>
+
         <div className="stack">
           <section className="panel">
             <PanelHeader title="O que já aconteceu" meta={dashboard.validations.length ? `${dashboard.validations.length} evidências` : 'ainda sem evidências'} />
@@ -807,6 +852,9 @@ function ExecutionMapPanel(props: {
                       <span className="execution-node-deps">
                         depois de {item.dependencies.map((dependency) => `${dependency.featureKey}:${dependency.itemKey}`).join(', ')}
                       </span>
+                    )}
+                    {item.missingCapabilities?.length > 0 && (
+                      <span className="execution-node-risk">lacunas: {item.missingCapabilities.join(', ')}</span>
                     )}
                   </button>
                 ))}
@@ -1070,6 +1118,15 @@ function PlanCheckReport({ report, currentItemKey }: { report: PlanCheckResult; 
                   {issue.message} Sugestão: {issue.suggestion}
                 </p>
               ))}
+              {item.riskTags?.length > 0 && (
+                <p className="plan-metrics">Riscos: {item.riskTags.join(', ')}</p>
+              )}
+              {item.requiredCapabilities?.length > 0 && (
+                <p className={`plan-issue ${item.validationStatus === 'BLOCKED' ? 'error' : 'warning'}`}>
+                  Checks: {item.coveredCapabilities?.length ?? 0}/{item.requiredCapabilities.length} cobertos
+                  {item.missingCapabilities?.length ? ` · lacunas: ${item.missingCapabilities.join(', ')}` : ''}
+                </p>
+              )}
               {item.violations.map((violation, index) => (
                 <p key={`violation-${index}`} className={`plan-issue ${violation.severity === 'ERROR' ? 'error' : 'warning'}`}>
                   {violation.message}

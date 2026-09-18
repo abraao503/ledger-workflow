@@ -8,6 +8,29 @@ export type WorkflowContextInput = {
     state: string;
     nextAllowedTransition?: string;
   };
+  riskTags?: string[];
+  journey?: {
+    useCases: Array<{
+      key: string;
+      title: string;
+      trigger: string;
+      expectedOutcome: string;
+    }>;
+    criteria: Array<{
+      key: string;
+      statement: string;
+      evidenceKind?: string;
+      polarity?: string;
+    }>;
+  };
+  validation?: {
+    status: 'OK' | 'BLOCKED';
+    requiredCapabilities: string[];
+    coveredCapabilities: string[];
+    missingCapabilities: string[];
+    unknownRiskTags: string[];
+    missingProfileKeys: string[];
+  };
   currentEvidence?: {
     outcome?: string;
     commitRef?: string;
@@ -123,6 +146,9 @@ export function buildWorkflowContext(
 
   const compact: WorkflowContext = {
     current: input.current,
+    ...(input.riskTags ? { riskTags: input.riskTags } : {}),
+    ...(input.journey ? { journey: input.journey } : {}),
+    ...(input.validation ? { validation: input.validation } : {}),
     currentEvidence: input.currentEvidence,
     lineage: input.lineage,
     authorization: input.authorization
@@ -177,6 +203,21 @@ export function buildWorkflowContext(
   }
 
   while (serializedLength(compact) > maxChars) {
+    const removableOptional = [
+      'currentEvidence',
+      'execution',
+      'lineage',
+      'dependencies',
+      'journey',
+      'validation',
+      'riskTags',
+    ].find((key) => compact[key as keyof WorkflowContext] !== undefined);
+
+    if (removableOptional) {
+      (compact as Record<string, unknown>)[removableOptional] = undefined;
+      continue;
+    }
+
     const removableCollection = [
       'acceptanceCriteria',
       'olderSummaries',

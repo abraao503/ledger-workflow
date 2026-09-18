@@ -47,6 +47,7 @@ describe('execution map', () => {
         state,
         requirementsComplete: true,
         tddPolicy: 'OPTIONAL',
+        ...(key === 'A' ? { riskTagsJson: '["API_WRITE"]' } : {}),
       },
     });
     const first = await createItem('A', 'Base A', 'IMPLEMENTING', 1);
@@ -97,5 +98,11 @@ describe('execution map', () => {
       itemKey: 'B',
       unlocks: [expect.objectContaining({ itemKey: 'D' })],
     })]);
+    expect(result.items.find((item) => item.itemKey === 'A')).toMatchObject({
+      riskTags: ['API_WRITE'],
+      requiredCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+      validationStatus: 'BLOCKED',
+      missingCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+    });
   });
 });

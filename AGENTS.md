@@ -175,6 +175,27 @@ detalhadas sob demanda. Para decisões e pendências, mantenha `--feature` e
 globais de decisões, pendências, perfis ou fatias para descobrir um único
 registro. O MCP deve passar os mesmos filtros aos tools equivalentes.
 
+## Jornadas observáveis e cobertura de risco
+
+Ao definir uma fatia de código, registre as tags de risco, a jornada observável de uso e
+critérios observáveis. O caso de uso deve ter gatilho e resultado esperado; os
+critérios devem indicar sua evidência (`PERSISTENCE`, `READ_MODEL`, `UI`,
+`RELOAD`, `SECURITY_NEGATIVE` ou outra evidência explícita) e podem declarar
+`EXPECTED` ou `FORBIDDEN`.
+
+O `plan check` cruza as tags com a matriz de capacidades. `API_WRITE`, por
+exemplo, exige `API_INTEGRATION` e `READ_AFTER_WRITE`; riscos de dados privados
+e isolamento exigem respectivamente `PRIVACY_NEGATIVE` e `TENANT_ISOLATION`.
+Perfil ausente, capacidade desconhecida ou cobertura faltante bloqueia o
+plano. O mesmo contrato deve aparecer no `context`, `record`, `frontier` e
+dashboard, para que outro agente possa continuar sem inferir requisitos.
+
+Após a autorização, trate tags, jornada e critérios como contrato congelado.
+Uma alteração exige nova autorização; evidência GREEN antiga não pode ser
+reaproveitada. Os bloqueios devem conservar os códigos
+`VALIDATION_PLAN_INCOMPLETE`, `VALIDATION_EVIDENCE_INCOMPLETE` e
+`RISK_CONTRACT_CHANGED` em CLI, MCP e web.
+
 ## Vocabulário
 
 - **Feature**: capacidade ou frente de produto que agrupa fatias. A chave é

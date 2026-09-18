@@ -37,4 +37,20 @@ describe('protocolo documentado do workflow', () => {
       expect(documentation).toContain(term);
     }
   });
+
+  it('documenta jornada observável, matriz de risco e gates de cobertura', () => {
+    const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8');
+    const documentation = `${read('README.md')}\n${read('AGENTS.md')}`;
+
+    for (const term of [
+      'jornada observável',
+      'matriz de risco',
+      'READ_AFTER_WRITE',
+      'VALIDATION_PLAN_INCOMPLETE',
+      'VALIDATION_EVIDENCE_INCOMPLETE',
+      'RISK_CONTRACT_CHANGED',
+    ]) {
+      expect(documentation).toContain(term);
+    }
+  });
 });

@@ -169,6 +169,52 @@ export class DashboardService {
       featureKey: currentFeature.key,
       itemKey: item.key,
     });
+    const plan = await this.ledger.checkPlan({
+      projectKey: currentProject.key,
+      featureKey: currentFeature.key,
+    });
+    const planItem = plan.items.find((candidate) => candidate.key === item.key);
+    const recordWithJourney = record as typeof record & {
+      item: { riskTags?: string[] };
+      useCases: Array<{
+        key: string;
+        title: string;
+        trigger: string;
+        expectedOutcome: string;
+      }>;
+      acceptanceCriteria: Array<{
+        key: string;
+        statement: string;
+        evidenceKind?: string;
+        polarity?: string;
+      }>;
+    };
+    const riskTags = recordWithJourney.item.riskTags ?? [];
+    const planningVisibility = {
+      riskTags,
+      journey: {
+        useCases: recordWithJourney.useCases.map((useCase) => ({
+          key: useCase.key,
+          title: useCase.title,
+          trigger: useCase.trigger,
+          expectedOutcome: useCase.expectedOutcome,
+        })),
+        criteria: recordWithJourney.acceptanceCriteria.map((criterion) => ({
+          key: criterion.key,
+          statement: criterion.statement,
+          evidenceKind: criterion.evidenceKind,
+          polarity: criterion.polarity,
+        })),
+      },
+      validation: {
+        status: planItem?.validationStatus ?? 'OK',
+        requiredCapabilities: planItem?.requiredCapabilities ?? [],
+        coveredCapabilities: planItem?.coveredCapabilities ?? [],
+        missingCapabilities: planItem?.missingCapabilities ?? [],
+        unknownRiskTags: planItem?.unknownRiskTags ?? [],
+        missingProfileKeys: planItem?.missingProfileKeys ?? [],
+      },
+    };
     const [repositories, activeFeatures, projectItems, allRepositories, health, lease, readyFrontier] = await Promise.all([
       this.db.repository.findMany({
         where: { projectId: currentProject.id },
@@ -300,7 +346,10 @@ export class DashboardService {
         taskType: record.item.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
       },
       gates: makeGates(item.state),
-      context: context as unknown as Record<string, unknown>,
+      context: {
+        ...context,
+        ...planningVisibility,
+      } as unknown as Record<string, unknown>,
       record: record as unknown as Record<string, unknown>,
       validations,
       pendingItems: record.pendingItems.map((pending) => ({

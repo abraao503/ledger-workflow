@@ -36,4 +36,14 @@ describe('agent granularity protocol documentation', () => {
     expect(agents).toContain('decision list --project <project-key> --feature <feature-key> --item <item-key>');
     expect(agents).toContain('pending list --project <project-key> --feature <feature-key> --item <item-key>');
   });
+
+  it('teaches agents to plan observable journeys and prove risk coverage', () => {
+    const readme = read('README.md');
+    const agents = read('AGENTS.md');
+
+    expect(readme).toContain('jornada observável');
+    expect(readme).toContain('READ_AFTER_WRITE');
+    expect(agents).toContain('VALIDATION_PLAN_INCOMPLETE');
+    expect(agents).toContain('RISK_CONTRACT_CHANGED');
+  });
 });

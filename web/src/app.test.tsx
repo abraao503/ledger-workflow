@@ -28,6 +28,19 @@ const snapshot = {
   ],
   context: {
     current: { state: 'IMPLEMENTING', nextAllowedTransition: 'GREEN_CONFIRMED' },
+    riskTags: ['API_WRITE'],
+    journey: {
+      useCases: [{ key: 'UC-01', title: 'Persistir', trigger: 'enviar', expectedOutcome: 'persistido' }],
+      criteria: [{ key: 'AC-01', statement: 'persistência confirmada', evidenceKind: 'PERSISTENCE', polarity: 'EXPECTED' }],
+    },
+    validation: {
+      status: 'BLOCKED',
+      requiredCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+      coveredCapabilities: ['API_INTEGRATION'],
+      missingCapabilities: ['READ_AFTER_WRITE'],
+      unknownRiskTags: [],
+      missingProfileKeys: [],
+    },
     authorization: {
       instruction: 'Implementar somente o escopo da fatia',
       actor: 'Codex',
@@ -70,6 +83,11 @@ const planReport = {
       metrics: { useCases: 4, requiredCriteria: 10, tests: 4 },
       repositoryScope: 'DECLARED', scopeIssues: [],
       semanticStatus: 'OK', semanticIssues: [],
+      riskTags: ['API_WRITE'],
+      requiredCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+      coveredCapabilities: ['API_INTEGRATION'],
+      missingCapabilities: ['READ_AFTER_WRITE'],
+      unknownRiskTags: [], missingProfileKeys: [], validationStatus: 'BLOCKED',
       violations: [{ severity: 'WARNING', message: 'A fatia excede o limite de casos de uso.' }],
       suggestions: ['Divida o resultado B em uma fatia derivada.'],
     },
@@ -162,6 +180,9 @@ const stubFetch = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
     expect(screen.getByText(/Derivadas: 03 · Derivada do replanejamento/)).toBeTruthy();
     expect(screen.queryByText('Overview Operacional')).toBeNull();
     expect(screen.queryByText('WAL')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Contrato observável' })).toBeTruthy();
+    expect(screen.getByText('API_WRITE')).toBeTruthy();
+    expect(screen.getByText(/READ_AFTER_WRITE/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Entrega', exact: true }));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entregas' })).toBeTruthy());

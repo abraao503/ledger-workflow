@@ -474,6 +474,11 @@ export type ExecutionMapItem = {
   wave: number | null;
   dependencies: ExecutionMapDependency[];
   dependents: ExecutionMapDependency[];
+  riskTags: string[];
+  requiredCapabilities: string[];
+  coveredCapabilities: string[];
+  missingCapabilities: string[];
+  validationStatus: 'OK' | 'BLOCKED';
   lease?: ExecutionMapLease;
 };
 
@@ -819,6 +824,7 @@ export type DashboardSnapshot = {
     tddPolicy: string;
     currentSha?: string | null;
     requirementsComplete: boolean;
+    riskTags?: string[];
   };
   gates: DashboardGate[];
   context: Record<string, unknown>;

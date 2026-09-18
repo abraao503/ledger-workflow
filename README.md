@@ -417,6 +417,28 @@ impedida de avançar até ser dividida ou até que um operador humano registre a
 aprovação. A aprovação usa um ator no formato
 `human:<identidade>`.
 
+### Jornadas observáveis e matriz de risco
+
+Uma fatia de código precisa descrever a jornada observável que será exercitada e como o
+resultado poderá ser observado. Cada caso de uso informa um gatilho e um
+resultado esperado; cada critério informa o tipo de evidência, como
+`PERSISTENCE`, `READ_MODEL`, `UI`, `RELOAD` ou `SECURITY_NEGATIVE`. Critérios
+`EXPECTED` descrevem o comportamento obrigatório e critérios `FORBIDDEN`
+registram regressões que não podem ocorrer.
+
+As tags de risco ligam o plano às validações necessárias. Por exemplo,
+`API_WRITE` exige `API_INTEGRATION` e `READ_AFTER_WRITE`, enquanto
+`PRIVATE_DATA` exige `PRIVACY_NEGATIVE` e `MULTI_TENANT` exige
+`TENANT_ISOLATION`. O `plan check` calcula essa matriz e bloqueia a fatia
+quando uma capacidade não tem perfil ou teste coberto.
+
+O contrato fica visível no `context`, `record`, `frontier` e no dashboard:
+riscos, jornada, capacidades cobertas e lacunas devem permanecer legíveis para
+o próximo agente. Depois da autorização, a mudança do contrato de risco é
+rejeitada. Os bloqueios usam códigos compartilhados entre CLI, MCP e web:
+`VALIDATION_PLAN_INCOMPLETE`, `VALIDATION_EVIDENCE_INCOMPLETE` e
+`RISK_CONTRACT_CHANGED`.
+
 ## Interfaces
 
 | Interface | Para quem | Como iniciar |
