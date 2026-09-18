@@ -36,6 +36,8 @@ const criterionSchema = z.object({
   statement: z.string(),
   useCaseKey: z.string().optional(),
   required: z.boolean().default(true),
+  evidenceKind: z.enum(['GENERAL', 'HTTP_RESPONSE', 'PERSISTENCE', 'READ_MODEL', 'UI', 'RELOAD', 'SECURITY_NEGATIVE']).default('GENERAL'),
+  polarity: z.enum(['EXPECTED', 'FORBIDDEN']).default('EXPECTED'),
 });
 
 const testSchema = z.object({
@@ -103,6 +105,7 @@ const itemSchema = z.object({
   requirementsComplete: z.boolean().optional(),
   currentSha: z.string().optional(),
   scope: scopeSchema.optional(),
+  riskTags: z.array(z.enum(['FRONTEND', 'API_READ', 'API_WRITE', 'DATABASE', 'MIGRATION', 'PRIVATE_DATA', 'MULTI_TENANT', 'REALTIME', 'ASYNC_JOB', 'EXTERNAL_INTEGRATION', 'VISUAL_ONLY'])).default([]),
   dependsOn: z.array(dependencySchema).default([]),
   useCases: z.array(useCaseSchema).default([]),
   criteria: z.array(criterionSchema).default([]),
@@ -173,6 +176,7 @@ const validationProfileSchema = z.object({
   args: z.array(z.string()).default([]),
   cwd: z.string().default('.'),
   parser: z.enum(['JEST', 'GENERIC']),
+  capabilities: z.array(z.enum(['BUILD', 'LINT', 'API_INTEGRATION', 'API_READ', 'READ_AFTER_WRITE', 'DATABASE_PERSISTENCE', 'MIGRATION', 'UI_INTERACTION', 'UI_RELOAD', 'PRIVACY_NEGATIVE', 'TENANT_ISOLATION', 'REALTIME_RECONCILIATION', 'ASYNC_CONSISTENCY', 'EXTERNAL_CONTRACT'])).default([]),
   timeoutSeconds: z.number().int().positive().default(60),
   maxOutputBytes: z.number().int().min(1_024).max(2_000_000).default(2_000_000),
 }).refine(
@@ -344,6 +348,7 @@ export class WorkflowImporter {
               requirementsComplete,
               tddPolicy: itemInput.tddPolicy,
               currentSha: itemInput.currentSha,
+              riskTagsJson: encodeJson(itemInput.riskTags),
               scopeJson: itemInput.scope ? encodeJson(itemInput.scope) : undefined,
             },
             update: {
@@ -356,6 +361,7 @@ export class WorkflowImporter {
               requirementsComplete,
               tddPolicy: itemInput.tddPolicy,
               currentSha: itemInput.currentSha,
+              riskTagsJson: encodeJson(itemInput.riskTags),
               scopeJson: itemInput.scope ? encodeJson(itemInput.scope) : null,
             },
           });
@@ -402,6 +408,8 @@ export class WorkflowImporter {
                 key: criterionInput.key,
                 statement: criterionInput.statement,
                 required: criterionInput.required,
+                evidenceKind: criterionInput.evidenceKind,
+                polarity: criterionInput.polarity,
               },
               update: {
                 useCaseId: criterionInput.useCaseKey
@@ -409,6 +417,8 @@ export class WorkflowImporter {
                   : undefined,
                 statement: criterionInput.statement,
                 required: criterionInput.required,
+                evidenceKind: criterionInput.evidenceKind,
+                polarity: criterionInput.polarity,
               },
             });
             criteria.set(criterion.key, criterion);
@@ -505,6 +515,7 @@ export class WorkflowImporter {
                 argsJson: encodeJson(profile.args),
                 cwd: profile.cwd,
                 parser: profile.parser,
+                capabilitiesJson: encodeJson(profile.capabilities),
                 timeoutSeconds: profile.timeoutSeconds,
                 maxOutputBytes: profile.maxOutputBytes,
               },
@@ -513,6 +524,7 @@ export class WorkflowImporter {
                 argsJson: encodeJson(profile.args),
                 cwd: profile.cwd,
                 parser: profile.parser,
+                capabilitiesJson: encodeJson(profile.capabilities),
                 timeoutSeconds: profile.timeoutSeconds,
                 maxOutputBytes: profile.maxOutputBytes,
               },

@@ -36,6 +36,12 @@ import { assessPlanSemantics } from '../domain/planning-semantics.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
+import {
+  criterionPolarityValues,
+  evidenceKindValues,
+  riskTagValues,
+  validationCapabilityValues,
+} from './types.js';
 import type {
   AddRepositoryInput,
   ApproveSliceSizeInput,
@@ -374,6 +380,11 @@ export class WorkflowLedger {
     if (scopeIssues.length) {
       fail(scopeIssues[0].code);
     }
+    const riskTags = normalizeCatalogValues(
+      input.riskTags ?? [],
+      riskTagValues,
+      'RISK_TAG_INVALID',
+    );
     const useCaseKeys = new Set<string>();
     const criterionKeys = new Set<string>();
     const testKeys = new Set<string>();
@@ -393,6 +404,14 @@ export class WorkflowLedger {
 
       if (criterion.useCaseKey && !useCaseKeys.has(criterion.useCaseKey)) {
         fail('CRITERION_USE_CASE_NOT_FOUND');
+      }
+
+      if (criterion.evidenceKind && !evidenceKindValues.includes(criterion.evidenceKind)) {
+        fail('CRITERION_EVIDENCE_KIND_INVALID');
+      }
+
+      if (criterion.polarity && !criterionPolarityValues.includes(criterion.polarity)) {
+        fail('CRITERION_POLARITY_INVALID');
       }
 
       criterionKeys.add(criterion.key);
@@ -475,6 +494,7 @@ export class WorkflowLedger {
           taskType: feature.taskType === 'PATCH' ? 'PATCH' : 'FEATURE',
           summary: input.summary,
           tddPolicy,
+          riskTagsJson: encodeJson(riskTags),
           parentItemId,
           scopeJson: input.scope ? encodeJson(input.scope) : undefined,
           requirementsComplete,
@@ -569,6 +589,8 @@ export class WorkflowLedger {
             key: criterion.key,
             statement: criterion.statement,
             required: criterion.required !== false,
+            evidenceKind: criterion.evidenceKind ?? 'GENERAL',
+            polarity: criterion.polarity ?? 'EXPECTED',
           },
         });
 
@@ -2478,6 +2500,12 @@ export class WorkflowLedger {
       fail('VALIDATION_OUTPUT_LIMIT_INVALID');
     }
 
+    const capabilities = normalizeCatalogValues(
+      input.capabilities ?? [],
+      validationCapabilityValues,
+      'VALIDATION_CAPABILITY_INVALID',
+    );
+
     return this.db.validationProfile.create({
       data: {
         repositoryId: (repository as NonNullable<typeof repository>).id,
@@ -2486,6 +2514,7 @@ export class WorkflowLedger {
         argsJson: encodeJson(input.args),
         cwd,
         parser: input.parser,
+        capabilitiesJson: encodeJson(capabilities),
         timeoutSeconds: input.timeoutSeconds ?? 60,
         maxOutputBytes: input.maxOutputBytes ?? 2_000_000,
       },
@@ -3014,7 +3043,7 @@ export class WorkflowLedger {
       : {};
     const currentClose = findClosedTransition(currentEvents);
 
-    return buildWorkflowContext(
+    const context = buildWorkflowContext(
       {
         current: {
           projectKey: input.projectKey,
@@ -3155,6 +3184,11 @@ export class WorkflowLedger {
       },
       input.maxChars,
     );
+
+    return {
+      ...context,
+      riskTags: decodeJson(item.riskTagsJson, []),
+    } as WorkflowContext & { riskTags: string[] };
   }
 
   async getRecord(input: RecordRequest) {
@@ -3220,8 +3254,10 @@ export class WorkflowLedger {
         tddPolicy: item.tddPolicy,
         currentSha: item.currentSha,
         requirementsComplete: item.requirementsComplete,
+        riskTags: decodeJson(item.riskTagsJson, []),
         scope: decodeWorkItemScope(item.scopeJson),
       },
+      riskTags: decodeJson(item.riskTagsJson, []),
       lineage: {
         parent: lineage?.parentItem ?? undefined,
         children: lineage?.childItems ?? [],
@@ -4963,6 +4999,28 @@ function sameContentSnapshot(
 function sanitizeGitSegment(value: string): string {
   const sanitized = value.trim().replace(/[^A-Za-z0-9._-]+/g, '-');
   return sanitized || 'item';
+}
+
+function normalizeCatalogValues<T extends string>(
+  values: readonly string[],
+  catalog: readonly T[],
+  invalidCode: string,
+): T[] {
+  const allowed = new Set<string>(catalog);
+  const normalized: T[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    if (!allowed.has(value)) {
+      fail(invalidCode);
+    }
+    if (!seen.has(value)) {
+      seen.add(value);
+      normalized.push(value as T);
+    }
+  }
+
+  return normalized;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

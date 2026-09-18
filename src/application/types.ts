@@ -16,6 +16,53 @@ export type DatabaseClient = PrismaClient;
 export const taskTypes = ['FEATURE', 'PATCH'] as const;
 export type TaskType = (typeof taskTypes)[number];
 
+export const riskTagValues = [
+  'FRONTEND',
+  'API_READ',
+  'API_WRITE',
+  'DATABASE',
+  'MIGRATION',
+  'PRIVATE_DATA',
+  'MULTI_TENANT',
+  'REALTIME',
+  'ASYNC_JOB',
+  'EXTERNAL_INTEGRATION',
+  'VISUAL_ONLY',
+] as const;
+export type RiskTag = (typeof riskTagValues)[number];
+
+export const evidenceKindValues = [
+  'GENERAL',
+  'HTTP_RESPONSE',
+  'PERSISTENCE',
+  'READ_MODEL',
+  'UI',
+  'RELOAD',
+  'SECURITY_NEGATIVE',
+] as const;
+export type EvidenceKind = (typeof evidenceKindValues)[number];
+
+export const criterionPolarityValues = ['EXPECTED', 'FORBIDDEN'] as const;
+export type CriterionPolarity = (typeof criterionPolarityValues)[number];
+
+export const validationCapabilityValues = [
+  'BUILD',
+  'LINT',
+  'API_INTEGRATION',
+  'API_READ',
+  'READ_AFTER_WRITE',
+  'DATABASE_PERSISTENCE',
+  'MIGRATION',
+  'UI_INTERACTION',
+  'UI_RELOAD',
+  'PRIVACY_NEGATIVE',
+  'TENANT_ISOLATION',
+  'REALTIME_RECONCILIATION',
+  'ASYNC_CONSISTENCY',
+  'EXTERNAL_CONTRACT',
+] as const;
+export type ValidationCapability = (typeof validationCapabilityValues)[number];
+
 export type CreateProjectInput = {
   key: string;
   name: string;
@@ -81,6 +128,8 @@ export type AcceptanceCriterionInput = {
   statement: string;
   useCaseKey?: string;
   required?: boolean;
+  evidenceKind?: EvidenceKind;
+  polarity?: CriterionPolarity;
 };
 
 export type TestSpecificationInput = {
@@ -103,6 +152,7 @@ export type DefineWorkItemInput = {
   tddPolicy?: 'REQUIRED' | 'OPTIONAL' | 'EXEMPT';
   parentItemKey?: string;
   scope?: WorkItemScope;
+  riskTags?: RiskTag[];
   dependsOn?: WorkItemDependencyRef[];
   useCases: UseCaseInput[];
   criteria: AcceptanceCriterionInput[];
@@ -165,6 +215,7 @@ export type CreateValidationProfileInput = {
   args: string[];
   cwd?: string;
   parser: 'JEST' | 'GENERIC';
+  capabilities?: ValidationCapability[];
   timeoutSeconds?: number;
   maxOutputBytes?: number;
 };
