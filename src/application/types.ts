@@ -10,6 +10,7 @@ import type {
   SemanticIssue,
   SemanticStatus,
 } from '../domain/planning-semantics.js';
+import type { ValidationRequirementAssessment } from '../domain/validation-requirements.js';
 
 export type DatabaseClient = PrismaClient;
 
@@ -603,6 +604,13 @@ export type PlanCheckItem = {
   violations: SliceSizeViolation[];
   suggestions: string[];
   repositoryScope: 'DECLARED' | 'CAPTURED' | 'UNKNOWN';
+  riskTags: string[];
+  requiredCapabilities: string[];
+  coveredCapabilities: string[];
+  missingCapabilities: string[];
+  unknownRiskTags: string[];
+  missingProfileKeys: string[];
+  validationStatus: ValidationRequirementAssessment['status'];
 };
 
 export type PlanCheckResult = {

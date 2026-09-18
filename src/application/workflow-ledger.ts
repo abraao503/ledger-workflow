@@ -33,6 +33,7 @@ import {
   validateWorkItemScope,
 } from '../domain/work-item-scope.js';
 import { assessPlanSemantics } from '../domain/planning-semantics.js';
+import { assessValidationCoverage } from '../domain/validation-requirements.js';
 import { GitReadAdapter } from './git-read-adapter.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
@@ -3600,27 +3601,45 @@ export class WorkflowLedger {
 
     const currentFeature = feature as NonNullable<typeof feature>;
     const policy = readSliceSizePolicy(currentFeature.template.definitionJson);
-    const items = await this.db.workItem.findMany({
-      where: { featureId: currentFeature.id },
-      orderBy: { position: 'asc' },
-      include: {
-        useCases: { select: { key: true, trigger: true, expectedOutcome: true } },
-        criteria: {
-          where: { required: true },
-          select: {
-            key: true,
-            evidenceKind: true,
-            polarity: true,
-            useCase: { select: { key: true } },
+    const [items, profiles] = await Promise.all([
+      this.db.workItem.findMany({
+        where: { featureId: currentFeature.id },
+        orderBy: { position: 'asc' },
+        include: {
+          useCases: { select: { key: true, trigger: true, expectedOutcome: true } },
+          criteria: {
+            where: { required: true },
+            select: {
+              key: true,
+              evidenceKind: true,
+              polarity: true,
+              useCase: { select: { key: true } },
+            },
           },
+          tests: {
+            select: {
+              key: true,
+              runnerProfileKey: true,
+              criterion: { select: { key: true } },
+            },
+          },
+          snapshots: { select: { repositoryId: true } },
+          parentItem: { select: { key: true } },
         },
-        tests: {
-          select: { key: true, criterion: { select: { key: true } } },
+      }),
+      this.db.validationProfile.findMany({
+        where: {
+          active: true,
+          repository: { projectId: currentFeature.projectId },
         },
-        snapshots: { select: { repositoryId: true } },
-        parentItem: { select: { key: true } },
-      },
-    });
+        select: { key: true, capabilitiesJson: true },
+        orderBy: { key: 'asc' },
+      }),
+    ]);
+    const validationProfiles = profiles.map((profile) => ({
+      key: profile.key,
+      capabilities: decodeJson<string[]>(profile.capabilitiesJson, []),
+    }));
 
     const auditedItems = items.map((item) => {
       const scope = decodeWorkItemScope(item.scopeJson);
@@ -3644,6 +3663,11 @@ export class WorkflowLedger {
             })),
             requiresTests: item.kind === 'CODE' && item.tddPolicy === 'REQUIRED',
           });
+      const validation = assessValidationCoverage({
+        riskTags: decodeJson<string[]>(item.riskTagsJson, []),
+        tests: item.tests,
+        profiles: validationProfiles,
+      });
       const assessment = currentFeature.taskType === 'PATCH'
         ? {
             status: 'OK' as const,
@@ -3684,6 +3708,13 @@ export class WorkflowLedger {
           : repositoryCount > 0
             ? 'CAPTURED' as const
             : 'UNKNOWN' as const,
+        riskTags: validation.riskTags,
+        requiredCapabilities: validation.requiredCapabilities,
+        coveredCapabilities: validation.coveredCapabilities,
+        missingCapabilities: validation.missingCapabilities,
+        unknownRiskTags: validation.unknownRiskTags,
+        missingProfileKeys: validation.missingProfileKeys,
+        validationStatus: validation.status,
       };
     });
 

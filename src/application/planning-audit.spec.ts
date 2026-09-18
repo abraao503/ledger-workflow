@@ -32,6 +32,15 @@ describe('WorkflowLedger planning audit', () => {
       key: 'workflow',
       path: '/tmp/audit/workflow',
     });
+    await ledger.createValidationProfile({
+      projectKey: 'audit',
+      repositoryKey: 'workflow',
+      key: 'write-incomplete',
+      program: 'npm',
+      args: ['test'],
+      parser: 'JEST',
+      capabilities: ['API_INTEGRATION'],
+    });
     await ledger.createTemplate({
       projectKey: 'audit',
       key: 'sized',
@@ -60,6 +69,7 @@ describe('WorkflowLedger planning audit', () => {
       position: 1,
       title: 'Fatia pequena',
       tddPolicy: 'REQUIRED',
+      riskTags: ['API_WRITE'],
       useCases: [{
         key: 'UC-01',
         title: 'Executar resultado',
@@ -72,7 +82,13 @@ describe('WorkflowLedger planning audit', () => {
         { key: 'AC-01', statement: 'Resultado correto', useCaseKey: 'UC-01' },
       ],
       tests: [
-        { key: 'T-01', name: 'RED', purpose: 'RED', criterionKey: 'AC-01' },
+        {
+          key: 'T-01',
+          name: 'RED',
+          purpose: 'RED',
+          criterionKey: 'AC-01',
+          runnerProfileKey: 'write-incomplete',
+        },
         { key: 'T-02', name: 'GREEN', purpose: 'GREEN', criterionKey: 'AC-01' },
       ],
     });
@@ -181,7 +197,16 @@ describe('WorkflowLedger planning audit', () => {
         exceptionRequired: 0,
       },
       items: [
-        { key: '01', status: 'OK', score: 0 },
+        {
+          key: '01',
+          status: 'OK',
+          score: 0,
+          riskTags: ['API_WRITE'],
+          requiredCapabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+          coveredCapabilities: ['API_INTEGRATION'],
+          missingCapabilities: ['READ_AFTER_WRITE'],
+          validationStatus: 'BLOCKED',
+        },
         { key: '02', status: 'SPLIT_RECOMMENDED', score: 3 },
       ],
     });
