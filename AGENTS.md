@@ -196,6 +196,47 @@ reaproveitada. Os bloqueios devem conservar os códigos
 `VALIDATION_PLAN_INCOMPLETE`, `VALIDATION_EVIDENCE_INCOMPLETE` e
 `RISK_CONTRACT_CHANGED` em CLI, MCP e web.
 
+### Contrato de apresentação para fatias com frontend
+
+Quando a fatia alterar uma tela, rota, componente ou comportamento visível,
+registre no item, antes de `READY`:
+
+- usuário/ator, gatilho, resultado esperado e uma única ação primária;
+- tela ou rota afetada e referências existentes que devem ser preservadas;
+- dados que podem aparecer, rótulos/termos esperados e dados proibidos na
+  interface, incluindo UUIDs, IDs internos, enums, códigos e mensagens de
+  diagnóstico;
+- estados de carregamento, erro, vazio, sucesso e dados parciais, além do
+  comportamento em viewport larga e estreita;
+- a tag `FRONTEND`; acrescente `VISUAL_ONLY` quando houver mudança de layout,
+  hierarquia, estilo, copy ou apresentação;
+- critérios `EXPECTED` com `evidenceKind: UI` e, quando a jornada atravessar
+  recarregamento ou persistência, `RELOAD`; use critérios `FORBIDDEN` para
+  registrar regressões como identificadores crus, texto técnico ou overflow;
+- testes ligados aos critérios e um perfil registrado com a capacidade
+  `UI_INTERACTION` quando a mudança for visual. Se esse perfil não existir,
+  registre a lacuna e pare para replanejar ou cadastrá-lo; não trate lint,
+  typecheck ou build como prova visual.
+
+Durante a execução, o agente deve consultar as referências do item, localizar
+o padrão equivalente mais próximo no frontend e criar uma fronteira de
+apresentação entre resposta da API e componentes. Campos técnicos não podem
+ser renderizados diretamente como texto de usuário. A implementação precisa
+preservar primitives, tokens, hierarquia, estados e comportamento responsivo
+do projeto.
+
+No GREEN/CHECK de uma fatia visual, execute a validação estrutural aplicável e
+a validação de interface prevista no item. Registre evidência para critérios
+`EXPECTED` e `FORBIDDEN`, incluindo viewport estreita quando ela fizer parte
+do contrato. Para mudanças de alto risco visual, declare revisão
+`INDEPENDENT`; `SELF` não conta como revisão independente.
+
+Uma `PATCH` pode usar uma definição enxuta, mas não pode usar esse atalho para
+omitir o contrato de apresentação: sua instrução e seu resumo devem informar
+tela/referência, dados visíveis e proibidos, estados, viewport e validação UI.
+Se houver mais de um resultado, dependência ou decisão de produto, reclassifique
+como `FEATURE`.
+
 ## Vocabulário
 
 - **Feature**: capacidade ou frente de produto que agrupa fatias. A chave é

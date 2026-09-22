@@ -439,6 +439,74 @@ rejeitada. Os bloqueios usam códigos compartilhados entre CLI, MCP e web:
 `VALIDATION_PLAN_INCOMPLETE`, `VALIDATION_EVIDENCE_INCOMPLETE` e
 `RISK_CONTRACT_CHANGED`.
 
+### Qualidade de interface em entregas full stack
+
+Uma tela pode cumprir o contrato HTTP e ainda falhar como produto: usar uma
+hierarquia diferente da área existente, exibir termos internos, mostrar
+identificadores sem significado ou não funcionar em uma viewport estreita. O
+ledger trata esse risco como parte da entrega, não como uma revisão estética
+posterior.
+
+O contrato de uma mudança visível deve responder, no próprio item, a seis
+perguntas:
+
+1. Quem usa a tela, qual ação inicia a jornada e qual é o único resultado
+   principal?
+2. Qual tela/rota será alterada e quais telas, componentes ou padrões atuais
+   servem de referência?
+3. Quais dados e rótulos o usuário deve ver? Quais dados internos não podem
+   aparecer — por exemplo UUIDs, IDs técnicos, enums, códigos ou diagnósticos?
+4. Como a tela se comporta em carregamento, erro, vazio, sucesso, dados
+   parciais e viewport estreita?
+5. Que critérios serão observados na interface e que regressões serão
+   proibidas?
+6. Qual validação visual e qual revisão demonstrarão que o resultado continua
+   pertencendo ao produto?
+
+Um contrato mínimo pode ser lido assim:
+
+```text
+Tela: /canais, usando ChannelCard e o padrão de cabeçalho existente
+Usuário e ação: operador seleciona uma conexão para configurá-la
+Resultado: a conexão aparece com nome amigável e estado compreensível
+Visível: nome, provedor, estado traduzido e ação primária
+Proibido: connectionId, provider enum, payload bruto e texto de diagnóstico
+Estados: carregando, erro recuperável, vazio, conectado, desconectado
+Responsivo: lista em viewport larga; navegação utilizável em viewport estreita
+Evidência: UI para o fluxo; RELOAD quando o estado persistir após recarga
+Regressões: nenhum UUID, overflow horizontal ou segunda ação concorrente
+```
+
+As responsabilidades ficam separadas:
+
+| Lugar | Responsabilidade |
+| --- | --- |
+| `workflow/AGENTS.md` | Regras operacionais que o agente deve aplicar, incluindo quando exigir contrato, risco, evidência, validação e revisão. |
+| Item do ledger | Decisões específicas da entrega: tela, referências, copy, campos visíveis/proibidos, estados, viewports, critérios, testes e autorização. |
+| `front/AGENTS.md` e `front/docs/agent/` | Padrões técnicos do frontend: composição, primitives, dados, acessibilidade e implementação da fronteira de apresentação. |
+| `workflow/README.md` | Explicação humana do modelo, das responsabilidades e dos motivos; não é a fonte do estado nem substitui o contexto do item. |
+
+Na prática, a definição acontece no ledger; a execução traduz o contrato em
+um view model e componentes que reutilizam o padrão existente; GREEN/CHECK
+comprovam a jornada; e a revisão verifica também copy, hierarquia, estados,
+responsividade e ausência de dados internos. Lint, typecheck e build continuam
+necessários, mas não comprovam por si só a qualidade visual.
+
+O `plan check` já pode cruzar `FRONTEND`/`VISUAL_ONLY` com a capacidade
+`UI_INTERACTION` e verificar critérios observáveis. Ele não decide sozinho se
+uma interface parece pertencer ao produto: essa parte exige evidência de uso e
+revisão humana, preferencialmente independente nas mudanças visuais de maior
+risco. Se a validação visual ainda não estiver disponível, a lacuna deve ficar
+visível no ledger em vez de ser mascarada por uma validação estrutural.
+
+No workspace Carará, o perfil `front-playwright-ui` executa o smoke test do
+frontend em Chromium desktop e mobile. Ele lê o usuário administrador de teste
+do `.env` local em tempo de execução; o ledger guarda apenas o comando e a
+capacidade `UI_INTERACTION`, nunca o e-mail ou a senha. O administrador serve
+para autenticar o fluxo. Cenários que exigem outro papel devem criar uma
+fixture explícita, identificável e reversível, com limpeza ao final — não devem
+alterar usuários reais como efeito colateral do smoke test compartilhado.
+
 ## Interfaces
 
 | Interface | Para quem | Como iniciar |
