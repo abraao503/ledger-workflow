@@ -49,6 +49,9 @@ describe('protocolo documentado do workflow', () => {
       'VALIDATION_PLAN_INCOMPLETE',
       'VALIDATION_EVIDENCE_INCOMPLETE',
       'RISK_CONTRACT_CHANGED',
+      'workflow metrics --project <project-key> --feature <feature-key> --item <item-key>',
+      'workflow preflight e2e --target <target>',
+      'não execute migration, reset ou seed automaticamente',
     ]) {
       expect(documentation).toContain(term);
     }

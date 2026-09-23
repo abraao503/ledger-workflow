@@ -46,4 +46,15 @@ describe('agent granularity protocol documentation', () => {
     expect(agents).toContain('VALIDATION_PLAN_INCOMPLETE');
     expect(agents).toContain('RISK_CONTRACT_CHANGED');
   });
+
+  it('documents cycle metrics and the read-only E2E preflight', () => {
+    const readme = read('README.md');
+    const agents = read('AGENTS.md');
+
+    for (const documentation of [readme, agents]) {
+      expect(documentation).toContain('workflow metrics --project <project-key> --feature <feature-key> --item <item-key>');
+      expect(documentation).toContain('workflow preflight e2e --target <target>');
+      expect(documentation).toContain('não execute migration, reset ou seed automaticamente');
+    }
+  });
 });

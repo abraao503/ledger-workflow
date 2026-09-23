@@ -39,6 +39,10 @@ import {
   deriveValidationRequirements,
 } from '../domain/validation-requirements.js';
 import { GitReadAdapter } from './git-read-adapter.js';
+import {
+  calculateCycleMetrics,
+  parsePersistedCycleMetrics,
+} from './cycle-metrics.js';
 import { fail, WorkflowApplicationError } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
 import {
@@ -3784,6 +3788,50 @@ export class WorkflowLedger {
     };
   }
 
+  async getCycleMetrics(input: RecordRequest) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    const [events, validations, history] = await Promise.all([
+      this.db.workflowEvent.findMany({
+        where: { workItemId: item.id },
+        select: { type: true, payloadJson: true, createdAt: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      }),
+      this.db.validationRun.findMany({
+        where: { workItemId: item.id },
+        select: { purpose: true, resultKind: true, durationMs: true, summaryJson: true, createdAt: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      }),
+      this.db.historySummary.findUnique({
+        where: {
+          projectId_scopeKey: {
+            projectId: item.feature.projectId,
+            scopeKey: `${item.feature.key}:${item.key}`,
+          },
+        },
+        select: { deliveredJson: true },
+      }),
+    ]);
+
+    const persisted = history ? parsePersistedCycleMetrics(history.deliveredJson) : undefined;
+    if (!events.length && !validations.length && persisted) {
+      return {
+        projectKey: input.projectKey,
+        featureKey: input.featureKey,
+        itemKey: input.itemKey,
+        source: 'HISTORY' as const,
+        ...persisted,
+      };
+    }
+
+    return {
+      projectKey: input.projectKey,
+      featureKey: input.featureKey,
+      itemKey: input.itemKey,
+      source: 'LIVE' as const,
+      ...calculateCycleMetrics({ item, events, validations }),
+    };
+  }
+
   async getValidationLog(input: {
     projectKey: string;
     featureKey: string;
@@ -4885,10 +4933,50 @@ export class WorkflowLedger {
           continue;
         }
 
-        const validations = await transaction.validationRun.findMany({
-          where: { workItemId: item.id },
-          select: { purpose: true, resultKind: true, sha: true },
+        const [events, validations] = await Promise.all([
+          transaction.workflowEvent.findMany({
+            where: { workItemId: item.id },
+            select: { type: true, payloadJson: true, createdAt: true },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          }),
+          transaction.validationRun.findMany({
+            where: { workItemId: item.id },
+            select: {
+              purpose: true,
+              status: true,
+              resultKind: true,
+              exitCode: true,
+              sha: true,
+              durationMs: true,
+              summaryJson: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          }),
+        ]);
+        const cycleMetrics = calculateCycleMetrics({
+          item,
+          events,
+          validations,
         });
+        const validationSummary = validations.map((validation) => ({
+          purpose: validation.purpose,
+          status: validation.status,
+          resultKind: validation.resultKind,
+          exitCode: validation.exitCode,
+          sha: validation.sha,
+          durationMs: validation.durationMs,
+          createdAt: validation.createdAt,
+          reused: (() => {
+            try {
+              const summary = JSON.parse(validation.summaryJson) as Record<string, unknown>;
+              return typeof summary.reusedFromValidationId === 'string' ||
+                typeof summary.reusedFromPurpose === 'string';
+            } catch {
+              return false;
+            }
+          })(),
+        }));
 
         await transaction.historySummary.upsert({
           where: { projectId_scopeKey: { projectId: feature.projectId, scopeKey: `${feature.key}:${item.key}` } },
@@ -4899,17 +4987,17 @@ export class WorkflowLedger {
             scopeKey: `${feature.key}:${item.key}`,
             state: item.state,
             result: item.state === 'CLOSED' ? 'CLOSED' : item.state,
-            deliveredJson: encodeJson({ title: item.title, summary: item.summary }),
+            deliveredJson: encodeJson({ title: item.title, summary: item.summary, cycleMetrics }),
             commitsJson: encodeJson(item.currentSha ? [item.currentSha] : []),
-            validationsJson: encodeJson(validations),
+            validationsJson: encodeJson(validationSummary),
             limitationsJson: encodeJson([]),
           },
           update: {
             state: item.state,
             result: item.state === 'CLOSED' ? 'CLOSED' : item.state,
-            deliveredJson: encodeJson({ title: item.title, summary: item.summary }),
+            deliveredJson: encodeJson({ title: item.title, summary: item.summary, cycleMetrics }),
             commitsJson: encodeJson(item.currentSha ? [item.currentSha] : []),
-            validationsJson: encodeJson(validations),
+            validationsJson: encodeJson(validationSummary),
           },
         });
 

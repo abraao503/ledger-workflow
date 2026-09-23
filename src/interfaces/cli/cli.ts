@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { WorkflowApplicationError } from '../../application/errors.js';
 import type { WorkflowApp } from '../../application/workflow-app.js';
 import { parseWorkflowImport } from '../../application/workflow-importer.js';
+import { createE2EPreflight } from '../../application/cycle-metrics.js';
 import { formatValidationResult } from '../validation-output.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -938,6 +939,30 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         activeItemKey: options.active,
         keepRecent: options.keepRecent,
       }), stdout);
+    });
+
+  program
+    .command('metrics')
+    .description('Mostra métricas de tempo, transições e validações de uma fatia')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.getCycleMetrics({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+      }), stdout);
+    });
+
+  const preflight = program
+    .command('preflight')
+    .description('Gera verificações somente leitura antes de um E2E');
+  preflight
+    .command('e2e')
+    .requiredOption('--target <target>')
+    .action(async (options, command) => {
+      emit(command, createE2EPreflight(options.target), stdout);
     });
 
   program

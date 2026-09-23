@@ -393,6 +393,31 @@ Evite listagens globais de decisões, pendências, perfis e fatias quando a
 pergunta já tiver um projeto, feature ou item definido. O mesmo princípio vale
 para as ferramentas MCP: filtre primeiro e expanda depois.
 
+### Métricas do ciclo e pré-verificação E2E
+
+Para entender onde uma fatia consumiu tempo, consulte separadamente o tempo
+decorrido em cada estado, as tentativas de validação, o que foi executado de
+fato, o que foi reaproveitado e a duração dos comandos:
+
+```bash
+node dist/interfaces/cli/main.js metrics \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+No protocolo, a mesma operação é referida de forma abreviada como `workflow metrics --project <project-key> --feature <feature-key> --item <item-key>`.
+
+Antes de iniciar um E2E, gere uma checklist somente leitura para o ambiente,
+banco, migrations, sessão e alvo:
+
+```bash
+node dist/interfaces/cli/main.js preflight e2e --target <target>
+```
+
+A forma abreviada é `workflow preflight e2e --target <target>`.
+
+O preflight não altera o ambiente. Regra: `não execute migration, reset ou seed automaticamente`. A execução do E2E continua sendo responsabilidade do perfil
+de validação autorizado.
+
 ### Abra o dashboard
 
 ```bash

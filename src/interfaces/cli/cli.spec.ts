@@ -132,6 +132,43 @@ describe('workflow CLI', () => {
     expect(output).toEqual(['{"id":"project-1","key":"carara"}\n']);
   });
 
+  it('routes metrics and read-only E2E preflight commands', async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const app = {
+      ledger: {
+        getCycleMetrics: async (input: unknown) => {
+          calls.push({ operation: 'metrics', input });
+          return { source: 'LIVE', validations: { attempts: 2 } };
+        },
+      },
+    } as unknown as WorkflowApp;
+    const output: string[] = [];
+    const cli = createCli({
+      app,
+      stdout: { write: (value) => {
+        output.push(value);
+        return true;
+      } },
+    });
+
+    await cli.parseAsync([
+      'node', 'workflow', 'metrics', '--project', 'workflow', '--feature', 'P9', '--item', '03',
+    ]);
+    await cli.parseAsync([
+      'node', 'workflow', 'preflight', 'e2e', '--target', 'chat checklist',
+    ]);
+
+    expect(calls).toEqual([{
+      operation: 'metrics',
+      input: { projectKey: 'workflow', featureKey: 'P9', itemKey: '03' },
+    }]);
+    expect(JSON.parse(output[0])).toMatchObject({ source: 'LIVE' });
+    expect(JSON.parse(output[1])).toMatchObject({
+      target: 'chat checklist',
+      safety: { automaticMigrations: false, destructiveOperations: false },
+    });
+  });
+
   it('rejects malformed JSON before invoking a write operation', async () => {
     let called = false;
     const app = {

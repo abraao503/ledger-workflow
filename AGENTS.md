@@ -198,6 +198,27 @@ detalhadas sob demanda. Para decisões e pendências, mantenha `--feature` e
 globais de decisões, pendências, perfis ou fatias para descobrir um único
 registro. O MCP deve passar os mesmos filtros aos tools equivalentes.
 
+Para diagnosticar gargalos sem carregar logs detalhados, use a consulta de
+métricas do ciclo. Ela separa tempo de permanência nos estados, tentativas de
+validação, execuções reais, reaproveitamentos e duração dos comandos:
+
+```bash
+rtk node dist/interfaces/cli/main.js metrics \
+  --project <project-key> --feature <feature-key> --item <item-key>
+```
+
+A forma abreviada documentada é `workflow metrics --project <project-key> --feature <feature-key> --item <item-key>`.
+
+Para preparar uma jornada E2E, use o preflight somente leitura:
+
+```bash
+rtk node dist/interfaces/cli/main.js preflight e2e --target <target>
+```
+
+A forma abreviada documentada é `workflow preflight e2e --target <target>`.
+
+O preflight verifica ambiente, banco, migrations, sessão e alvo. Regra: `não execute migration, reset ou seed automaticamente`.
+
 ## Jornadas observáveis e cobertura de risco
 
 Ao definir uma fatia de código, registre as tags de risco, a jornada observável de uso e
