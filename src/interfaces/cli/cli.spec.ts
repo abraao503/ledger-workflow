@@ -3,6 +3,33 @@ import { WorkflowApplicationError } from '../../application/errors.js';
 import { createCli } from './cli.js';
 
 describe('workflow CLI', () => {
+  it('passes a visual PATCH contract to the ledger', async () => {
+    const calls: unknown[] = [];
+    const app = { ledger: { createTask: async (input: unknown) => {
+      calls.push(input);
+      return { item: { state: 'READY' } };
+    } } } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+    cli.commands.find((command) => command.name() === 'task')
+      ?.commands.find((command) => command.name() === 'create')?.exitOverride();
+    await cli.parseAsync([
+      'node', 'workflow', 'task', 'create', '--project', 'carara',
+      '--type', 'PATCH', '--key', 'UI-01', '--title', 'Repaginar tela',
+      '--summary', 'Alterar a biblioteca',
+      '--scope', '{"repositories":[{"repositoryKey":"front","paths":["src/pages/Example.tsx"]}]}',
+      '--risk-tags', '["VISUAL_ONLY"]',
+      '--use-cases', '[{"key":"UC-01","title":"Consultar","actor":"operador","preconditions":"workspace selecionado","trigger":"abre a tela","expectedOutcome":"encontra o modelo"}]',
+      '--criteria', '[{"key":"AC-01","statement":"tela utilizável","useCaseKey":"UC-01","evidenceKind":"UI"}]',
+      '--tests', '[{"key":"T-01","name":"jornada UI","purpose":"GREEN","runnerProfileKey":"front-ui","criterionKey":"AC-01"}]',
+    ]);
+    expect(calls[0]).toMatchObject({
+      riskTags: ['VISUAL_ONLY'],
+      useCases: [{ actor: 'operador' }],
+      criteria: [{ evidenceKind: 'UI' }],
+      tests: [{ runnerProfileKey: 'front-ui' }],
+    });
+  });
+
   it('passes structured arguments to the ledger and supports compact JSON output', async () => {
     const calls: unknown[] = [];
     const result = { id: 'project-1', key: 'carara' };

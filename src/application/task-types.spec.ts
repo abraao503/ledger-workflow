@@ -35,6 +35,17 @@ describe('task types', () => {
       path: '/tmp/tasks/app',
       expectedBranch: 'main',
     });
+    await ledger.addRepository({
+      projectKey: 'tasks',
+      key: 'front',
+      path: '/tmp/tasks/front',
+      expectedBranch: 'main',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'tasks', repositoryKey: 'front', key: 'front-ui',
+      program: 'npm', args: ['run', 'test:e2e'], parser: 'GENERIC',
+      capabilities: ['UI_INTERACTION'],
+    });
     await ledger.createTemplate({
       projectKey: 'tasks',
       key: 'feature-template',
@@ -125,5 +136,73 @@ describe('task types', () => {
     });
 
     expect(implementing.state).toBe('IMPLEMENTING');
+  });
+
+  it('requires a journey and UI evidence for a frontend page PATCH', async () => {
+    const scope = {
+      repositories: [{ repositoryKey: 'front', paths: ['src/pages/ExamplePage.tsx'] }],
+    };
+    await expect(ledger.createPointTask({
+      projectKey: 'tasks', key: 'P3', title: 'Repaginar tela',
+      summary: 'Reformular toda a tela.', scope,
+    })).rejects.toMatchObject({ code: 'TASK_UI_CONTRACT_REQUIRED' });
+
+    const patch = await ledger.createPointTask({
+      projectKey: 'tasks', key: 'P4', title: 'Repaginar tela',
+      summary: 'Reformular toda a tela.', scope,
+      riskTags: ['VISUAL_ONLY'],
+      useCases: [{
+        key: 'UC-01', title: 'Consultar modelos', actor: 'operador',
+        preconditions: 'workspace operacional selecionado',
+        trigger: 'abre a biblioteca', expectedOutcome: 'encontra o modelo e sua ação principal',
+      }],
+      criteria: [{
+        key: 'AC-01', statement: 'a jornada é utilizável em desktop e mobile',
+        useCaseKey: 'UC-01', evidenceKind: 'UI', polarity: 'EXPECTED',
+      }],
+      tests: [{
+        key: 'T-01', name: 'jornada em dois viewports', purpose: 'GREEN',
+        runnerProfileKey: 'front-ui', criterionKey: 'AC-01',
+      }],
+    } as Parameters<typeof ledger.createPointTask>[0]);
+
+    expect(patch.item.state).toBe('READY');
+    expect(JSON.parse(patch.item.riskTagsJson)).toEqual(['FRONTEND', 'VISUAL_ONLY']);
+    await expect(client.useCase.count({ where: { workItemId: patch.item.id } })).resolves.toBe(1);
+    await expect(client.acceptanceCriterion.count({ where: { workItemId: patch.item.id } })).resolves.toBe(1);
+    await expect(client.testSpecification.count({ where: { workItemId: patch.item.id } })).resolves.toBe(1);
+    const plan = await ledger.checkPlan({ projectKey: 'tasks', featureKey: 'P4' });
+    expect(plan.items[0]).toMatchObject({
+      semanticStatus: 'OK', validationStatus: 'OK',
+      requiredCapabilities: ['UI_INTERACTION'],
+    });
+
+    await client.testSpecification.deleteMany({ where: { workItemId: patch.item.id } });
+    await client.acceptanceCriterion.deleteMany({ where: { workItemId: patch.item.id } });
+    await client.useCase.deleteMany({ where: { workItemId: patch.item.id } });
+    const legacyPlan = await ledger.checkPlan({ projectKey: 'tasks', featureKey: 'P4' });
+    expect(legacyPlan.items[0]).toMatchObject({ semanticStatus: 'BLOCKED' });
+  });
+
+  it('rejects an incomplete structured contract outside the UI', async () => {
+    await expect(ledger.createPointTask({
+      projectKey: 'tasks', key: 'P6', title: 'Corrigir serviço',
+      summary: 'Corrigir um caso sem interface.',
+      scope: { repositories: [{ repositoryKey: 'app', paths: ['src/service.ts'] }] },
+      useCases: [{
+        key: 'UC-01', title: 'Executar serviço', actor: 'agente',
+        preconditions: 'ambiente pronto', trigger: 'executa serviço',
+        expectedOutcome: 'serviço conclui',
+      }],
+    })).rejects.toMatchObject({ code: 'TASK_CONTRACT_INVALID' });
+  });
+
+  it('keeps a scoped documentation PATCH on the short path', async () => {
+    const patch = await ledger.createPointTask({
+      projectKey: 'tasks', key: 'P5', title: 'Atualizar guia',
+      summary: 'Corrigir instruções.', kind: 'DOCUMENTATION',
+      scope: { repositories: [{ repositoryKey: 'front', paths: ['docs/agent/README.md'] }] },
+    });
+    expect(patch.item).toMatchObject({ state: 'READY', tddPolicy: 'EXEMPT' });
   });
 });

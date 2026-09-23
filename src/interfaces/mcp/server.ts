@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { isWorkflowApplicationError } from '../../application/workflow-ledger.js';
 import type { WorkflowApp } from '../../application/workflow-app.js';
+import { criterionPolarityValues, evidenceKindValues, riskTagValues } from '../../application/types.js';
 import { workItemStates } from '../../domain/workflow-state.js';
 import { formatValidationResult } from '../validation-output.js';
 
@@ -54,6 +55,21 @@ export function createMcpServer(app: WorkflowApp): McpServer {
             paths: z.array(z.string()),
           })),
         }).optional(),
+        riskTags: z.enum(riskTagValues).array().optional(),
+        useCases: z.array(z.object({
+          key: z.string(), title: z.string(), actor: z.string(),
+          preconditions: z.string(), trigger: z.string(), expectedOutcome: z.string(),
+          invariants: z.array(z.string()).optional(),
+        })).optional(),
+        criteria: z.array(z.object({
+          key: z.string(), statement: z.string(), useCaseKey: z.string().optional(),
+          required: z.boolean().optional(), evidenceKind: z.enum(evidenceKindValues).optional(),
+          polarity: z.enum(criterionPolarityValues).optional(),
+        })).optional(),
+        tests: z.array(z.object({
+          key: z.string(), name: z.string(), purpose: z.enum(['RED', 'GREEN', 'CHECK']),
+          runnerProfileKey: z.string().optional(), criterionKey: z.string().optional(),
+        })).optional(),
       },
     },
     async (input) => runTool(() => app.ledger.createTask(input)),
@@ -259,18 +275,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         kind: z.enum(['CODE', 'DOCUMENTATION', 'VALIDATION', 'OTHER']).optional(),
         summary: z.string().optional(),
         tddPolicy: z.enum(['REQUIRED', 'OPTIONAL', 'EXEMPT']).optional(),
-        riskTags: z.enum([
-          'API_READ',
-          'API_WRITE',
-          'AUTHORIZATION',
-          'ASYNC_PROCESSING',
-          'EXTERNAL_INTEGRATION',
-          'PRIVATE_DATA',
-          'PERSISTENCE',
-          'REALTIME',
-          'UI_FLOW',
-          'WORKFLOW_GATE',
-        ]).array().optional(),
+        riskTags: z.enum(riskTagValues).array().optional(),
         parentItemKey: z.string().optional(),
         dependsOn: z.array(z.object({
           featureKey: z.string(),
@@ -296,18 +301,8 @@ export function createMcpServer(app: WorkflowApp): McpServer {
           statement: z.string(),
           useCaseKey: z.string().optional(),
           required: z.boolean().optional(),
-          evidenceKind: z.enum([
-            'GENERAL',
-            'API_RESPONSE',
-            'DATABASE_STATE',
-            'EVENT',
-            'FILE_ARTIFACT',
-            'UI_STATE',
-            'LOG',
-            'METRIC',
-            'PERSISTENCE',
-          ]).optional(),
-          polarity: z.enum(['EXPECTED', 'FORBIDDEN']).optional(),
+          evidenceKind: z.enum(evidenceKindValues).optional(),
+          polarity: z.enum(criterionPolarityValues).optional(),
         })),
         tests: z.array(z.object({
           key: z.string(),

@@ -152,6 +152,10 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .option('--version <number>', 'versão do template para FEATURE', parseNumber)
     .option('--kind <kind>', 'CODE|DOCUMENTATION|VALIDATION|OTHER', 'CODE')
     .option('--scope <json>', 'escopo técnico com repositórios e padrões de caminho')
+    .option('--risk-tags <json>', 'tags de risco para PATCH')
+    .option('--use-cases <json>', 'jornadas observáveis para PATCH')
+    .option('--criteria <json>', 'critérios de aceite para PATCH')
+    .option('--tests <json>', 'testes e perfis para PATCH')
     .action(async (options, command) => {
       const taskType = String(options.type).toUpperCase();
       if (taskType !== 'FEATURE' && taskType !== 'PATCH') {
@@ -167,6 +171,10 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
         summary: options.summary,
         kind: options.kind,
         scope: options.scope ? parseJson(options.scope, 'scope') : undefined,
+        riskTags: options.riskTags ? parseJson(options.riskTags, 'risk-tags') : undefined,
+        useCases: options.useCases ? parseJson(options.useCases, 'use-cases') : undefined,
+        criteria: options.criteria ? parseJson(options.criteria, 'criteria') : undefined,
+        tests: options.tests ? parseJson(options.tests, 'tests') : undefined,
       }), stdout);
     });
 

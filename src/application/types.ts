@@ -100,6 +100,10 @@ export type CreatePointTaskInput = {
   summary: string;
   kind?: 'CODE' | 'DOCUMENTATION' | 'VALIDATION' | 'OTHER';
   scope?: WorkItemScope;
+  riskTags?: RiskTag[];
+  useCases?: UseCaseInput[];
+  criteria?: AcceptanceCriterionInput[];
+  tests?: TestSpecificationInput[];
 };
 
 export type CreateTaskInput = {
@@ -112,6 +116,10 @@ export type CreateTaskInput = {
   templateVersion?: number;
   kind?: 'CODE' | 'DOCUMENTATION' | 'VALIDATION' | 'OTHER';
   scope?: WorkItemScope;
+  riskTags?: RiskTag[];
+  useCases?: UseCaseInput[];
+  criteria?: AcceptanceCriterionInput[];
+  tests?: TestSpecificationInput[];
 };
 
 export type UseCaseInput = {

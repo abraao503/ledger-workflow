@@ -146,6 +146,32 @@ describe('workflow MCP server', () => {
         text: expect.stringContaining('"taskType":"PATCH"'),
       },
     ]);
+    const visualTaskResult = await client.callTool({
+      name: 'workflow_create_task',
+      arguments: {
+        projectKey: 'carara', type: 'PATCH', key: 'UI-01',
+        title: 'Repaginar tela', summary: 'Alterar a biblioteca',
+        scope: { repositories: [{ repositoryKey: 'front', paths: ['src/pages/Example.tsx'] }] },
+        riskTags: ['VISUAL_ONLY'],
+        useCases: [{
+          key: 'UC-01', title: 'Consultar', actor: 'operador',
+          preconditions: 'workspace selecionado', trigger: 'abre a tela',
+          expectedOutcome: 'encontra o modelo',
+        }],
+        criteria: [{
+          key: 'AC-01', statement: 'tela utilizável',
+          useCaseKey: 'UC-01', evidenceKind: 'UI',
+        }],
+        tests: [{
+          key: 'T-01', name: 'jornada UI', purpose: 'GREEN',
+          runnerProfileKey: 'front-ui', criterionKey: 'AC-01',
+        }],
+      },
+    });
+    expect(visualTaskResult.isError).not.toBe(true);
+    expect(visualTaskResult.content).toEqual([{
+      type: 'text', text: expect.stringContaining('"riskTags":["VISUAL_ONLY"]'),
+    }]);
 
     const planResult = await client.callTool({
       name: 'workflow_plan_check',

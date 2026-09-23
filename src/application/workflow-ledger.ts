@@ -263,6 +263,94 @@ export class WorkflowLedger {
 
     const project = await this.requireProject(input.projectKey);
     const kind = input.kind ?? 'CODE';
+    const useCases = input.useCases ?? [];
+    const criteria = input.criteria ?? [];
+    const tests = input.tests ?? [];
+    if (![useCases, criteria, tests].every(Array.isArray)) {
+      fail('TASK_CONTRACT_INVALID');
+    }
+    const isUiPatch = kind === 'CODE' && Boolean(
+      isFrontendUiScope(input.scope)
+      || input.riskTags?.some((tag) => tag === 'FRONTEND' || tag === 'VISUAL_ONLY'),
+    );
+    const riskTags = normalizeCatalogValues(
+      isUiPatch ? ['FRONTEND', ...(input.riskTags ?? [])] : (input.riskTags ?? []),
+      riskTagValues,
+      'RISK_TAG_INVALID',
+    );
+
+    const hasContract = isUiPatch || riskTags.length > 0
+      || useCases.length > 0 || criteria.length > 0 || tests.length > 0;
+    if (hasContract) {
+      const contractError = isUiPatch ? 'TASK_UI_CONTRACT_REQUIRED' : 'TASK_CONTRACT_INVALID';
+      const scope = input.scope ?? fail(contractError);
+      const useCaseKeys = new Set(useCases.map((useCase) => useCase.key));
+      const criterionKeys = new Set(criteria.map((criterion) => criterion.key));
+      const testKeys = new Set(tests.map((test) => test.key));
+      const uiCriteria = criteria.filter((criterion) => (
+        criterion.required !== false
+        && criterion.polarity !== 'FORBIDDEN'
+        && criterion.evidenceKind === 'UI'
+      ));
+      if (
+        useCases.length === 0
+        || useCases.some((useCase) => !useCase.actor?.trim())
+        || useCaseKeys.size !== useCases.length
+        || criterionKeys.size !== criteria.length
+        || testKeys.size !== tests.length
+        || (isUiPatch && uiCriteria.length === 0)
+        || criteria.some((criterion) => !criterion.useCaseKey || !useCaseKeys.has(criterion.useCaseKey))
+        || tests.some((test) => !test.criterionKey || !criterionKeys.has(test.criterionKey))
+        || criteria.some((criterion) => (
+          (criterion.evidenceKind && !evidenceKindValues.includes(criterion.evidenceKind))
+          || (criterion.polarity && !criterionPolarityValues.includes(criterion.polarity))
+        ))
+      ) {
+        fail(contractError);
+      }
+
+      const semantic = assessPlanSemantics({
+        useCases,
+        criteria,
+        tests,
+        requiresTests: kind === 'CODE',
+      });
+      if (semantic.status !== 'OK') {
+        fail(contractError, 'A jornada precisa de um resultado e critérios observáveis.', {
+          issues: semantic.issues,
+        });
+      }
+
+      const profiles = await this.db.validationProfile.findMany({
+        where: {
+          active: true,
+          repository: {
+            projectId: project.id,
+            key: { in: scope.repositories.map((repository) => repository.repositoryKey) },
+          },
+        },
+        select: { key: true, capabilitiesJson: true },
+      });
+      const validationProfiles = profiles.map((profile) => ({
+        key: profile.key,
+        capabilities: decodeJson<string[]>(profile.capabilitiesJson, []),
+      }));
+      const uiCriterionKeys = new Set(uiCriteria.map((criterion) => criterion.key));
+      const hasLinkedUiTest = !isUiPatch || tests.some((test) => (
+        uiCriterionKeys.has(test.criterionKey ?? '')
+        && validationProfiles.some((profile) => (
+          profile.key === test.runnerProfileKey
+          && profile.capabilities.includes('UI_INTERACTION')
+        ))
+      ));
+      const validation = assessValidationCoverage({ riskTags, tests, profiles: validationProfiles });
+      if (!hasLinkedUiTest || validation.status !== 'OK') {
+        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis que cubram os riscos e o critério UI.', {
+          missingCapabilities: validation.missingCapabilities,
+          missingProfileKeys: validation.missingProfileKeys,
+        });
+      }
+    }
 
     return this.db.$transaction(async (transaction) => {
       await this.lockProjectForWrite(transaction, project.id);
@@ -331,9 +419,56 @@ export class WorkflowLedger {
           summary: input.summary.trim(),
           requirementsComplete: true,
           tddPolicy: 'EXEMPT',
+          riskTagsJson: encodeJson(riskTags),
           scopeJson: input.scope ? encodeJson(input.scope) : undefined,
         },
       });
+
+      const useCasesByKey = new Map<string, string>();
+      for (const useCase of useCases) {
+        const created = await transaction.useCase.create({
+          data: {
+            workItemId: item.id,
+            key: useCase.key,
+            title: useCase.title,
+            actor: useCase.actor,
+            preconditions: useCase.preconditions,
+            trigger: useCase.trigger,
+            expectedOutcome: useCase.expectedOutcome,
+            invariantsJson: encodeJson(useCase.invariants ?? []),
+          },
+        });
+        useCasesByKey.set(useCase.key, created.id);
+      }
+
+      const criteriaByKey = new Map<string, string>();
+      for (const criterion of criteria) {
+        const created = await transaction.acceptanceCriterion.create({
+          data: {
+            workItemId: item.id,
+            useCaseId: criterion.useCaseKey ? useCasesByKey.get(criterion.useCaseKey) : undefined,
+            key: criterion.key,
+            statement: criterion.statement,
+            required: criterion.required !== false,
+            evidenceKind: criterion.evidenceKind ?? 'GENERAL',
+            polarity: criterion.polarity ?? 'EXPECTED',
+          },
+        });
+        criteriaByKey.set(criterion.key, created.id);
+      }
+
+      for (const test of tests) {
+        await transaction.testSpecification.create({
+          data: {
+            workItemId: item.id,
+            criterionId: test.criterionKey ? criteriaByKey.get(test.criterionKey) : undefined,
+            key: test.key,
+            name: test.name,
+            purpose: test.purpose,
+            runnerProfileKey: test.runnerProfileKey,
+          },
+        });
+      }
 
       await transaction.workflowEvent.create({
         data: {
@@ -3656,7 +3791,14 @@ export class WorkflowLedger {
       const repositoryCount = scope
         ? scope.repositories.length
         : new Set(item.snapshots.map((snapshot) => snapshot.repositoryId)).size;
+      const itemRiskTags = decodeJson<string[]>(item.riskTagsJson, []);
+      const requiresUiContract = item.kind === 'CODE' && (
+        isFrontendUiScope(scope)
+        || itemRiskTags.some((tag) => tag === 'FRONTEND' || tag === 'VISUAL_ONLY')
+      );
       const semantic = currentFeature.taskType === 'PATCH'
+        && item.useCases.length === 0
+        && !requiresUiContract
         ? { status: 'OK' as const, issues: [] }
         : assessPlanSemantics({
             useCases: item.useCases,
@@ -3673,7 +3815,7 @@ export class WorkflowLedger {
             requiresTests: item.kind === 'CODE' && item.tddPolicy === 'REQUIRED',
           });
       const validation = assessValidationCoverage({
-        riskTags: decodeJson<string[]>(item.riskTagsJson, []),
+        riskTags: itemRiskTags,
         tests: item.tests,
         profiles: validationProfiles,
       });
@@ -4515,7 +4657,7 @@ export class WorkflowLedger {
             status: undefined as 'OK' | 'SPLIT_RECOMMENDED' | 'EXCEPTION_REQUIRED' | undefined,
             approved: false,
           }),
-      this.getValidationTransitionContext(item, input.to),
+      this.getValidationTransitionContext(item, input.to as WorkItemState),
     ]);
 
     const redEvidence = red?.resultKind === 'TEST_FAILURE' ? red : undefined;
@@ -5185,6 +5327,17 @@ function sameContentSnapshot(
     return left.contentFingerprint === right.contentFingerprint;
   }
   return left.sha === right.sha;
+}
+
+function isFrontendUiScope(scope: CreatePointTaskInput['scope']): boolean {
+  return Boolean(scope?.repositories.some((repository) => (
+    repository.repositoryKey === 'front'
+    && repository.paths.some((filePath) => (
+      filePath === 'src/**'
+      || filePath === 'src/App.tsx'
+      || /^src\/(pages|components|layouts)\//.test(filePath)
+    ))
+  )));
 }
 
 function sanitizeGitSegment(value: string): string {
