@@ -83,8 +83,10 @@ O ledger aceita dois tipos de tarefa:
 - **`FEATURE`**: usa o modelo atual, com template, uma ou mais fatias,
   planejamento de granularidade, casos de uso, critérios, testes e RED;
 - **`PATCH`**: representa uma modificação pontual. É criada como uma tarefa
-  única, já em `READY`, sem template público, casos de uso, critérios, auditoria
-  de tamanho, definição de testes ou RED.
+  única, já em `READY`, sem template público ou auditoria de tamanho. Em uma
+  correção sem UI, pode seguir sem casos de uso, critérios, testes ou RED. Se
+  alterar uma tela, componente ou comportamento visual, precisa fornecer o
+  contrato estruturado de jornada, critérios de UI e perfil de teste visual.
 
 `PATCH` mantém os controles que protegem a execução: autorização humana,
 baseline Git, lease, GREEN, revisão e commit. Depois de reivindicada, ela pode
@@ -104,6 +106,22 @@ node dist/interfaces/cli/main.js item claim \
 node dist/interfaces/cli/main.js item transition \
   --project <project-key> --feature <task-key> --item 01 \
   --to IMPLEMENTING --fence <generation>
+```
+
+Esse exemplo é para uma mudança sem interface. Uma `PATCH` que altera UI
+precisa declarar jornada, critério `UI` e teste com perfil `UI_INTERACTION`
+registrado. Para texto e layout de um frontend, `--kind DOCUMENTATION` não se
+aplica: reserve esse tipo para documentação, sem cerimônia TDD.
+
+```bash
+node dist/interfaces/cli/main.js task create \
+  --project <project-key> --type PATCH --key <task-key> \
+  --title "Repaginar página de modelos" --summary "Reformular tela e componentes" \
+  --scope '{"repositories":[{"repositoryKey":"front","paths":["src/pages/ModelsPage.tsx","src/components/models/**"]}]}' \
+  --risk-tags '["VISUAL_ONLY"]' \
+  --use-cases '[{"key":"UC-01","title":"Consultar modelos","actor":"operador","preconditions":"workspace selecionado","trigger":"abre a biblioteca","expectedOutcome":"encontra e aplica o modelo permitido"}]' \
+  --criteria '[{"key":"AC-01","statement":"a jornada funciona em viewports desktop e mobile","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]' \
+  --tests '[{"key":"T-01","name":"consultar modelos em dois viewports","purpose":"GREEN","runnerProfileKey":"<perfil-ui-interaction>","criterionKey":"AC-01"}]'
 ```
 
 Use `task list --project <project-key>` para consultar os dois tipos. O comando
@@ -450,13 +468,16 @@ posterior.
 O contrato de uma mudança visível deve responder, no próprio item, a seis
 perguntas:
 
-1. Quem usa a tela, qual ação inicia a jornada e qual é o único resultado
-   principal?
-2. Qual tela/rota será alterada e quais telas, componentes ou padrões atuais
-   servem de referência?
-3. Quais dados e rótulos o usuário deve ver? Quais dados internos não podem
+1. Quais roles usam a tela e o que cada role pode consultar, criar, editar ou
+   aplicar? Quem tem apenas leitura? Qual ação inicia cada jornada e qual é o
+   resultado principal?
+2. Qual tela/rota e quais componentes serão alterados? Quais padrões atuais
+   servem de referência e quais partes, como modais já aprovados, ficam fora do
+   escopo?
+3. Quais dados e rótulos cada role deve ver? Quais dados internos não podem
    aparecer — por exemplo UUIDs, IDs técnicos, enums, códigos ou diagnósticos?
-4. Como a tela se comporta em carregamento, erro, vazio, sucesso, dados
+4. Como a página completa e os componentes afetados se comportam em
+   carregamento, erro, vazio, sucesso, dados
    parciais e viewport estreita?
 5. Que critérios serão observados na interface e que regressões serão
    proibidas?
@@ -488,9 +509,12 @@ As responsabilidades ficam separadas:
 
 Na prática, a definição acontece no ledger; a execução traduz o contrato em
 um view model e componentes que reutilizam o padrão existente; GREEN/CHECK
-comprovam a jornada; e a revisão verifica também copy, hierarquia, estados,
-responsividade e ausência de dados internos. Lint, typecheck e build continuam
-necessários, mas não comprovam por si só a qualidade visual.
+comprovam a jornada de cada role; e a revisão percorre a tela inteira e seus
+componentes para verificar copy, hierarquia, estados, responsividade e ausência
+de dados internos. Repaginar significa melhorar a experiência e os componentes
+afetados, não somente trocar a posição dos elementos. Não adicione filtros ou
+abas sem necessidade demonstrada pela tarefa ou pelas permissões. Lint,
+typecheck e build não comprovam por si só a qualidade visual.
 
 O `plan check` já pode cruzar `FRONTEND`/`VISUAL_ONLY` com a capacidade
 `UI_INTERACTION` e verificar critérios observáveis. Ele não decide sozinho se
@@ -506,6 +530,33 @@ capacidade `UI_INTERACTION`, nunca o e-mail ou a senha. O administrador serve
 para autenticar o fluxo. Cenários que exigem outro papel devem criar uma
 fixture explícita, identificável e reversível, com limpeza ao final — não devem
 alterar usuários reais como efeito colateral do smoke test compartilhado.
+
+### Feedback e correções na entrega ativa
+
+Quando o usuário corrige ou complementa uma solicitação enquanto a fatia ainda
+está ativa, incorpore o feedback no mesmo item e no mesmo ciclo de revisão,
+desde que os critérios, repositórios e efeitos autorizados cubram a mudança.
+Registre esclarecimentos como decisões antes de editar. Se o feedback mudar os
+critérios ou ultrapassar a autorização, solicite a autorização necessária ou
+replaneje a fatia. Depois de `CLOSED`, um novo resultado distinto recebe uma
+fatia pequena relacionada; o histórico fechado permanece intacto.
+
+Se já houve GREEN, invalide-o antes de aplicar correções. Para mudança coberta
+por critérios existentes, registre o esclarecimento como decisão no item; se
+os critérios, roles, escopo ou risco mudarem, obtenha nova autorização ou
+replaneje antes de editar. Rode novamente o GREEN depois que o conjunto de
+alterações estiver estável. Não feche enquanto houver feedback aplicável sem
+resposta ou validação.
+
+### Validação proporcional da documentação
+
+Uma tarefa `PATCH` somente documental usa `--kind DOCUMENTATION` e a política
+TDD `EXEMPT`. Faça o check documental já registrado que cobre os arquivos
+alterados, confira o diff com `rtk git diff --check` e revise links e conteúdo.
+Não execute lint, typecheck ou build do frontend quando nenhum código foi
+alterado; essas verificações não demonstram que a documentação está correta.
+Para uma mudança de código, escolha o perfil GREEN registrado que cubra o
+comportamento e as camadas efetivamente tocadas.
 
 ## Interfaces
 

@@ -146,6 +146,29 @@ casos de uso ou testes artificiais apenas para reproduzir o protocolo de
 `FEATURE`; registre validação proporcional ao arquivo e ao comportamento
 alterados.
 
+Para `PATCH` que altera uma página, componente ou comportamento visual, o
+contrato estruturado é obrigatório. Inclua `--scope`, `--risk-tags`,
+`--use-cases`, `--criteria` e `--tests`; o caso de uso descreve o ator e a
+jornada, o critério usa `evidenceKind: UI` e o teste aponta para um perfil
+registrado com capacidade `UI_INTERACTION`. Exemplo:
+
+```bash
+rtk node dist/interfaces/cli/main.js task create \
+  --project <project-key> --type PATCH --key <task-key> \
+  --title "Repaginar biblioteca operacional" \
+  --summary "Reformular a página e seus componentes para a jornada de consulta" \
+  --scope '{"repositories":[{"repositoryKey":"front","paths":["src/pages/OperationChecklistTemplatesPage.tsx","src/components/operation-checklists/**"]}]}' \
+  --risk-tags '["VISUAL_ONLY"]' \
+  --use-cases '[{"key":"UC-01","title":"Consultar modelos","actor":"operador com leitura de atendimentos","preconditions":"workspace operacional selecionado","trigger":"abre a biblioteca de checklists","expectedOutcome":"encontra um modelo e entende como aplicá-lo"}]' \
+  --criteria '[{"key":"AC-01","statement":"a jornada está clara e utilizável nas viewports larga e estreita","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]' \
+  --tests '[{"key":"T-01","name":"consultar modelos em dois viewports","purpose":"GREEN","runnerProfileKey":"<perfil-ui-interaction>","criterionKey":"AC-01"}]'
+```
+
+Use `--kind DOCUMENTATION` para uma `PATCH` somente documental. Esse caminho
+pula a cerimônia TDD; faça o check documental registrado que cobre os arquivos
+alterados, confira o diff e revise o conteúdo. Não rode lint, typecheck ou
+build de frontend apenas porque o texto está em um repositório de frontend.
+
 Para uma capacidade ou frente de produto, use `FEATURE` e o fluxo completo de
 criação de feature, definição de fatias, `plan check`, testes definidos, RED,
 implementação, GREEN, revisão, commit e fechamento. O atalho `task create
@@ -201,8 +224,14 @@ reaproveitada. Os bloqueios devem conservar os códigos
 Quando a fatia alterar uma tela, rota, componente ou comportamento visível,
 registre no item, antes de `READY`:
 
+- roles que usam a tela, permissões efetivas de cada role e o que cada uma pode
+  consultar, criar, editar ou aplicar; destaque diferenças entre leitura e
+  operação em vez de tratar todo usuário autenticado como equivalente;
 - usuário/ator, gatilho, resultado esperado e uma única ação primária;
 - tela ou rota afetada e referências existentes que devem ser preservadas;
+- escopo da repaginação: tela inteira e todos os componentes afetados. Registre
+  separadamente os modais explicitamente fora do escopo, se já estiverem
+  aprovados e não precisarem de mudança;
 - dados que podem aparecer, rótulos/termos esperados e dados proibidos na
   interface, incluindo UUIDs, IDs internos, enums, códigos e mensagens de
   diagnóstico;
@@ -223,19 +252,46 @@ o padrão equivalente mais próximo no frontend e criar uma fronteira de
 apresentação entre resposta da API e componentes. Campos técnicos não podem
 ser renderizados diretamente como texto de usuário. A implementação precisa
 preservar primitives, tokens, hierarquia, estados e comportamento responsivo
-do projeto.
+do projeto. Para uma repaginação, critique a página atual e proponha uma
+hierarquia e interações coerentes para a tarefa principal; implemente as
+mudanças nos componentes afetados, não apenas mova os componentes existentes.
+Não crie filtros, abas ou etapas de navegação sem uma necessidade real para a
+jornada e para as permissões registradas. Só depois de examinar a tela e o
+contrato de roles faça perguntas curtas sobre decisões de produto ainda
+indefinidas; não pergunte novamente o que o contexto já respondeu.
 
 No GREEN/CHECK de uma fatia visual, execute a validação estrutural aplicável e
 a validação de interface prevista no item. Registre evidência para critérios
 `EXPECTED` e `FORBIDDEN`, incluindo viewport estreita quando ela fizer parte
-do contrato. Para mudanças de alto risco visual, declare revisão
-`INDEPENDENT`; `SELF` não conta como revisão independente.
+do contrato. Percorra a tela completa e todos os componentes alterados como
+cada role prevista no contrato; confira estados e ações permitidos, não apenas
+posição ou aparência isolada de componentes. Para mudanças de alto risco
+visual, declare revisão `INDEPENDENT`; `SELF` não conta como revisão
+independente. Lint, typecheck e build não são evidência visual.
 
 Uma `PATCH` pode usar uma definição enxuta, mas não pode usar esse atalho para
 omitir o contrato de apresentação: sua instrução e seu resumo devem informar
 tela/referência, dados visíveis e proibidos, estados, viewport e validação UI.
 Se houver mais de um resultado, dependência ou decisão de produto, reclassifique
 como `FEATURE`.
+
+### Correções durante uma entrega ativa
+
+Uma correção ou preferência nova do usuário enquanto a fatia está ativa faz
+parte da mesma entrega quando continua dentro dos critérios, repositórios e
+efeitos já autorizados. Registre a decisão ou esclarecimento no item e prossiga
+pelo mesmo ciclo de implementação e revisão; não abra outra tarefa só para
+repetir planejamento ou apresentar uma variação. Não altere silenciosamente os
+critérios congelados após a autorização. Se o feedback mudar critérios, roles,
+escopo, efeitos permitidos ou contrato de risco, pare a edição e obtenha nova
+autorização ou replaneje antes de continuar.
+
+Se houver GREEN e o usuário pedir mudança, invalide-o antes de editar, usando
+`item invalidate-green`; depois de estabilizar todos os arquivos, rode GREEN
+novamente. Não encerre a fatia enquanto feedback ativo ainda estiver pendente.
+Se a entrega já estiver `CLOSED` e surgir um resultado distinto, abra uma nova
+fatia pequena no contexto relacionado; não reabra ou duplique a entrega
+fechada para contornar o histórico.
 
 ## Vocabulário
 
@@ -422,9 +478,18 @@ rtk node dist/interfaces/cli/main.js item invalidate-green \
 Depois, execute GREEN novamente antes de enviar para revisão. A transição para
 `READY_FOR_REVIEW`, `APPROVED` ou `CLOSED` rejeita evidência obsoleta.
 
-Se a revisão retornar `CHANGES_REQUIRED`, faça as mudanças, volte para
-`TESTS_DEFINED` e repita RED. Se retornar `BLOCKED`, resolva o motivo e use
-`item reopen`; uma fatia bloqueada não avança com `item transition`.
+Se a revisão retornar `CHANGES_REQUIRED`, invalide GREEN antes de editar e
+volte para `TESTS_DEFINED`. Para TDD obrigatório, repita RED; para `OPTIONAL`
+ou `EXEMPT`, registre a justificativa da exceção e siga sem RED. Se retornar
+`BLOCKED`, resolva o motivo e use `item reopen`; uma fatia bloqueada não avança
+com `item transition`.
+
+Para iniciar correções depois do GREEN, invalide a evidência antes da primeira
+edição, mesmo que o fingerprint ainda não tenha mudado. Assim, nenhuma mudança
+fica acidentalmente coberta por um GREEN antigo. Depois de aplicar todas as
+correções e estabilizar o diff, execute o perfil GREEN aplicável novamente;
+para documentação, use somente o check documental pertinente e o check de
+diff, sem validações de código sem relação com os arquivos alterados.
 
 ## Falhas e logs
 
