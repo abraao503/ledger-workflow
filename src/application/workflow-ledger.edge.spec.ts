@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { DefineWorkItemInput, GitReadPort } from './types.js';
 import { ValidationExecutor } from './validation-executor.js';
 import { WorkflowLedger } from './workflow-ledger.js';
+import { WorkflowStateMachine } from '../domain/workflow-state.js';
 import { createTestDatabase, type TestDatabase } from '../infrastructure/db/test-database.js';
 
 describe('WorkflowLedger edge cases', () => {
@@ -126,6 +127,14 @@ describe('WorkflowLedger edge cases', () => {
       args: ['test'],
       parser: 'JEST',
     });
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'planning',
+      key: 'outside-json-evidence',
+      program: 'npm',
+      args: ['test', '--', '--json'],
+      parser: 'JEST_JSON',
+    });
     await ledger.defineWorkItem({
       projectKey: 'edge',
       featureKey: 'F1',
@@ -170,6 +179,14 @@ describe('WorkflowLedger edge cases', () => {
       }],
       executionFence: lease.lease.generation,
     })).rejects.toMatchObject({ code: 'STRUCTURED_TEST_PARSER_REQUIRED' });
+
+    await expect(ledger.bindTestSelectors({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      tests: [{
+        key: 'T-01', testSelector: 'src/example.spec.ts::outside', runnerProfileKey: 'outside-json-evidence',
+      }],
+      executionFence: lease.lease.generation,
+    })).rejects.toMatchObject({ code: 'VALIDATION_PROFILE_NOT_FOUND' });
 
     const bound = await ledger.bindTestSelectors({
       projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
@@ -269,6 +286,195 @@ describe('WorkflowLedger edge cases', () => {
       reviewMode: 'INDEPENDENT',
       item: { state: expectedState },
     });
+  });
+
+  it('audits plan corrections and rejects incompatible prior GREEN evidence', async () => {
+    const itemKey = 'review-resume';
+    const oldProfileKey = 'review-resume-old-json';
+    const newProfileKey = 'review-resume-new-json';
+    const redProfileKey = 'review-resume-red';
+    for (const key of [oldProfileKey, newProfileKey]) {
+      await ledger.createValidationProfile({
+        projectKey: 'edge',
+        repositoryKey: 'api',
+        key,
+        program: 'npm',
+        args: ['test', '--', '--json'],
+        parser: 'JEST_JSON',
+      });
+    }
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: redProfileKey,
+      program: 'npm',
+      args: ['test'],
+      parser: 'GENERIC',
+    });
+    await ledger.defineWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      key: itemKey,
+      phaseKey: 'G1',
+      position: 51,
+      title: 'Review correction and resume',
+      scope: { repositories: [{ repositoryKey: 'api', paths: ['src/**'] }] },
+      useCases: [{
+        key: 'UC-01', title: 'Correct and resume', actor: 'agent',
+        preconditions: 'authorized', trigger: 'review requests a correction',
+        expectedOutcome: 'new plan evidence is required without repeating RED',
+      }],
+      criteria: [{ key: 'AC-01', statement: 'the changed selector is verified' }],
+      tests: [{
+        key: 'T-01', name: 'required behavior', purpose: 'GREEN',
+        runnerProfileKey: oldProfileKey, criterionKey: 'AC-01',
+      }],
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey, to: 'READY',
+    });
+    await authorize(itemKey);
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey, to: 'TESTS_DEFINED',
+    });
+    await ledger.bindTestSelectors({
+      projectKey: 'edge', featureKey: 'F1', itemKey, executionFence: 1,
+      tests: [{
+        key: 'T-01', runnerProfileKey: oldProfileKey,
+        testSelector: 'src/example.spec.ts::required v1',
+      }],
+    });
+    await ledger.recordValidation({
+      projectKey: 'edge', featureKey: 'F1', itemKey,
+      repositoryKey: 'api', profileKey: redProfileKey, purpose: 'RED',
+      status: 'COMPLETED', resultKind: 'TEST_FAILURE', exitCode: 1,
+      sha: 'sha-1', durationMs: 10,
+      summary: {
+        fingerprint: 'fingerprint-1', contentFingerprint: 'content-1',
+        redEvidenceKind: 'BEHAVIORAL',
+      },
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey, to: 'RED_CONFIRMED',
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey, to: 'IMPLEMENTING',
+    });
+
+    const report = (title: string) => JSON.stringify({
+      testResults: [{
+        name: '/tmp/ledger-edge/api/src/example.spec.ts',
+        assertionResults: [{ fullName: title, status: 'passed' }],
+      }],
+    });
+    const executorFor = (profileKey: string, title: string) => new ValidationExecutor(
+      client,
+      ledger,
+      { capture: async () => snapshot },
+      { run: async () => ({ exitCode: 0, stdout: report(title), stderr: '', timedOut: false }) },
+    );
+
+    try {
+      const firstGreen = await executorFor(oldProfileKey, 'required v1').run({
+        projectKey: 'edge', featureKey: 'F1', itemKey,
+        repositoryKey: 'api', profileKey: oldProfileKey, purpose: 'GREEN', executionFence: 1,
+      });
+      expect(firstGreen.itemState).toBe('GREEN_CONFIRMED');
+      await ledger.transitionWorkItem({
+        projectKey: 'edge', featureKey: 'F1', itemKey, to: 'READY_FOR_REVIEW',
+      });
+      await ledger.submitReview({
+        projectKey: 'edge', featureKey: 'F1', itemKey,
+        reviewer: 'reviewer', verdict: 'CHANGES_REQUIRED',
+        summary: 'atualizar a identidade do teste',
+        findings: [{
+          severity: 'MEDIUM', location: 'src/example.spec.ts',
+          evidence: 'seletor desatualizado', risk: 'GREEN não prova o caso atual',
+          correction: 'atualizar seletor e perfil', testNeeded: 'reexecutar GREEN',
+        }],
+      });
+
+      const before = await client.workItem.findFirstOrThrow({
+        where: { key: itemKey, feature: { key: 'F1' } },
+        include: { criteria: true },
+      });
+      const rebound = await ledger.bindTestSelectors({
+        projectKey: 'edge', featureKey: 'F1', itemKey, executionFence: 1,
+        tests: [{
+          key: 'T-01', runnerProfileKey: newProfileKey,
+          testSelector: 'src/example.spec.ts::required v2',
+        }],
+      });
+      expect(rebound).toMatchObject([{
+        key: 'T-01', runnerProfileKey: newProfileKey,
+        testSelector: 'src/example.spec.ts::required v2',
+      }]);
+      const after = await client.workItem.findFirstOrThrow({
+        where: { key: itemKey, feature: { key: 'F1' } },
+        include: { criteria: true },
+      });
+      expect(after.scopeJson).toBe(before.scopeJson);
+      expect(after.riskTagsJson).toBe(before.riskTagsJson);
+      expect(after.criteria).toEqual(before.criteria);
+      await expect(client.workflowEvent.findFirst({
+        where: { workItemId: before.id, type: 'TEST_SELECTORS_BOUND' },
+        orderBy: { createdAt: 'desc' },
+      })).resolves.toMatchObject({
+        payloadJson: expect.stringContaining('required v2'),
+      });
+
+      const redCount = await client.validationRun.count({
+        where: { workItemId: before.id, purpose: 'RED' },
+      });
+      await ledger.transitionWorkItem({
+        projectKey: 'edge', featureKey: 'F1', itemKey,
+        to: 'IMPLEMENTING', reason: 'retomar correção sem repetir RED', executionFence: 1,
+      });
+      await expect(client.validationRun.count({
+        where: { workItemId: before.id, purpose: 'RED' },
+      })).resolves.toBe(redCount);
+
+      await expect(ledger.transitionWorkItem({
+        projectKey: 'edge', featureKey: 'F1', itemKey,
+        to: 'GREEN_CONFIRMED', executionFence: 1,
+      })).rejects.toMatchObject({
+        code: 'VALIDATION_EVIDENCE_INCOMPLETE',
+        details: { pendingTestKeys: ['T-01'] },
+      });
+      const secondGreen = await executorFor(newProfileKey, 'required v2').run({
+        projectKey: 'edge', featureKey: 'F1', itemKey,
+        repositoryKey: 'api', profileKey: newProfileKey, purpose: 'GREEN', executionFence: 1,
+      });
+      expect(secondGreen.itemState).toBe('GREEN_CONFIRMED');
+    } finally {
+      await client.workItem.deleteMany({
+        where: { key: itemKey, feature: { key: 'F1' } },
+      });
+    }
+  });
+
+  it('resumes implementation after CHANGES_REQUIRED without requiring another RED', () => {
+    const machine = new WorkflowStateMachine();
+    const validContext = {
+      changesRequired: true,
+      testsDefined: true,
+      validationPlanComplete: true,
+      riskContractStable: true,
+    };
+
+    expect(() => machine.assertTransition('CHANGES_REQUIRED', 'IMPLEMENTING', validContext)).not.toThrow();
+    expect(() => machine.assertTransition('CHANGES_REQUIRED', 'IMPLEMENTING', {
+      ...validContext,
+      testsDefined: false,
+    })).toThrow('TESTS_REQUIRED');
+    expect(() => machine.assertTransition('CHANGES_REQUIRED', 'IMPLEMENTING', {
+      ...validContext,
+      changesRequired: false,
+    })).toThrow('REVIEW_DECISION_REQUIRED');
+    expect(() => machine.assertTransition('CHANGES_REQUIRED', 'IMPLEMENTING', {
+      ...validContext,
+      validationPlanComplete: false,
+    })).toThrow('VALIDATION_PLAN_INCOMPLETE');
   });
 
   it('reopens a blocked item at its previous state and records the operator', async () => {

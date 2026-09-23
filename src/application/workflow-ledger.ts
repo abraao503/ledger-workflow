@@ -2672,11 +2672,21 @@ export class WorkflowLedger {
   async bindTestSelectors(input: BindTestSelectorsInput) {
     const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
     await this.requireActiveExecutionFence(item.id, input.executionFence);
-    if (!['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING'].includes(item.state)) {
+    if (!['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING', 'CHANGES_REQUIRED'].includes(item.state)) {
       fail('TEST_SELECTOR_BINDING_STATE_INVALID');
     }
     if (input.tests.length === 0) {
       fail('TEST_SELECTOR_BINDING_EMPTY');
+    }
+
+    if (item.state === 'CHANGES_REQUIRED') {
+      const review = await this.db.review.findFirst({
+        where: { workItemId: item.id },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (review?.verdict !== 'CHANGES_REQUIRED') {
+        fail('REVIEW_DECISION_REQUIRED');
+      }
     }
 
     const scope = decodeWorkItemScope(item.scopeJson);
@@ -5502,7 +5512,7 @@ export class WorkflowLedger {
       GREEN_CONFIRMED: 'READY_FOR_REVIEW',
       READY_FOR_REVIEW: 'APPROVED',
       APPROVED: 'CLOSED',
-      CHANGES_REQUIRED: 'TESTS_DEFINED',
+      CHANGES_REQUIRED: 'IMPLEMENTING',
     };
 
     return transitions[state];

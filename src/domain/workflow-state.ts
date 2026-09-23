@@ -113,7 +113,7 @@ export class WorkflowStateMachine {
 
     if (
       context.riskContractStable === false &&
-      ['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING', 'GREEN_CONFIRMED', 'READY_FOR_REVIEW']
+      ['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING', 'GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'CHANGES_REQUIRED']
         .includes(from)
     ) {
       transitionError('RISK_CONTRACT_CHANGED');
@@ -250,6 +250,22 @@ export class WorkflowStateMachine {
     if (from === 'CHANGES_REQUIRED' && to === 'TESTS_DEFINED') {
       if (!context.testsDefined) {
         transitionError('TESTS_REQUIRED');
+      }
+
+      return;
+    }
+
+    if (from === 'CHANGES_REQUIRED' && to === 'IMPLEMENTING') {
+      if (!context.changesRequired) {
+        transitionError('REVIEW_DECISION_REQUIRED');
+      }
+
+      if (!context.testsDefined) {
+        transitionError('TESTS_REQUIRED');
+      }
+
+      if (context.validationPlanComplete === false) {
+        transitionError('VALIDATION_PLAN_INCOMPLETE');
       }
 
       return;
