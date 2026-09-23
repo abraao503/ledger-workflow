@@ -2653,13 +2653,14 @@ export class WorkflowLedger {
       fail('GREEN_EVIDENCE_NOT_FOUND');
     }
 
-    if (greenContext.greenEvidenceIsCurrent) {
-      fail('GREEN_EVIDENCE_NOT_STALE');
-    }
-
     return this.db.$transaction(async (transaction) => {
       await this.lockProjectForWrite(transaction, item.feature.projectId);
       await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      const latestGreen = await transaction.validationRun.findFirst({
+        where: { workItemId: item.id, purpose: 'GREEN' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { id: true },
+      });
       const updated = await transaction.workItem.update({
         where: { id: item.id },
         data: { state: 'IMPLEMENTING' },
@@ -2675,6 +2676,7 @@ export class WorkflowLedger {
             from: item.state,
             to: 'IMPLEMENTING',
             reason: input.reason.trim(),
+            invalidatedThroughValidationId: latestGreen?.id,
             evidenceSha: greenContext.greenEvidenceSha,
             evidenceFingerprint: greenContext.greenEvidenceFingerprint,
             evidenceContentFingerprint: greenContext.greenEvidenceContentFingerprint,
@@ -4770,7 +4772,7 @@ export class WorkflowLedger {
     item: WorkItemWithFeature,
     captureCurrent: boolean,
   ): Promise<GreenEvidenceContext> {
-    const [snapshots, validations] = await Promise.all([
+    const [snapshots, allValidations, lastInvalidation] = await Promise.all([
       this.db.repositorySnapshot.findMany({
         where: { workItemId: item.id },
         include: { repository: true },
@@ -4779,9 +4781,24 @@ export class WorkflowLedger {
       this.db.validationRun.findMany({
         where: { workItemId: item.id, purpose: 'GREEN' },
         include: { profile: { include: { repository: true } } },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      this.db.workflowEvent.findFirst({
+        where: { workItemId: item.id, type: 'GREEN_INVALIDATED' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
     ]);
+    const invalidationPayload = lastInvalidation
+      ? decodeJson<{ invalidatedThroughValidationId?: string }>(lastInvalidation.payloadJson, {})
+      : {};
+    const boundaryIndex = invalidationPayload.invalidatedThroughValidationId
+      ? allValidations.findIndex((validation) => validation.id === invalidationPayload.invalidatedThroughValidationId)
+      : -1;
+    const validations = !lastInvalidation
+      ? allValidations
+      : boundaryIndex >= 0
+        ? allValidations.slice(0, boundaryIndex)
+        : allValidations.filter((validation) => validation.createdAt > lastInvalidation.createdAt);
     const repositories = new Map<string, { id: string; key: string; path: string }>();
 
     for (const snapshot of snapshots) {
