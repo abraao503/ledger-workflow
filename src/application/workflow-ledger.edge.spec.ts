@@ -109,13 +109,94 @@ describe('WorkflowLedger edge cases', () => {
     expect(planning.path).toBe('/tmp/ledger-edge');
   });
 
+  it('binds unique selectors only to active structured profiles inside the authorized scope', async () => {
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: 'json-evidence',
+      program: 'npm',
+      args: ['test', '--', '--json'],
+      parser: 'JEST_JSON',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'edge',
+      repositoryKey: 'api',
+      key: 'text-evidence',
+      program: 'npm',
+      args: ['test'],
+      parser: 'JEST',
+    });
+    await ledger.defineWorkItem({
+      projectKey: 'edge',
+      featureKey: 'F1',
+      key: 'bind-selectors',
+      phaseKey: 'G1',
+      position: 50,
+      title: 'Bind test selectors',
+      scope: { repositories: [{ repositoryKey: 'api', paths: ['src/**'] }] },
+      useCases: [{
+        key: 'UC-01', title: 'Link an observed test', actor: 'agent',
+        preconditions: 'item authorized', trigger: 'bind selector',
+        expectedOutcome: 'test identity is auditable',
+      }],
+      criteria: [{ key: 'AC-01', statement: 'the planned test is identifiable' }],
+      tests: [{
+        key: 'T-01', name: 'required behavior', purpose: 'GREEN',
+        runnerProfileKey: 'json-evidence', criterionKey: 'AC-01',
+      }],
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors', to: 'READY',
+    });
+    await ledger.authorizeWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      instruction: 'bind only the structured selector', actor: 'owner',
+      allowedEffects: ['test selector metadata'], forbiddenEffects: ['change criteria'],
+      repositoryKeys: ['api'],
+    });
+    const lease = await ledger.claimWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      holder: 'agent:test', durationSeconds: 3_600,
+    });
+    await ledger.transitionWorkItem({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      to: 'TESTS_DEFINED', executionFence: lease.lease.generation,
+    });
+
+    await expect(ledger.bindTestSelectors({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      tests: [{
+        key: 'T-01', testSelector: 'src/example.spec.ts::required', runnerProfileKey: 'text-evidence',
+      }],
+      executionFence: lease.lease.generation,
+    })).rejects.toMatchObject({ code: 'STRUCTURED_TEST_PARSER_REQUIRED' });
+
+    const bound = await ledger.bindTestSelectors({
+      projectKey: 'edge', featureKey: 'F1', itemKey: 'bind-selectors',
+      tests: [{
+        key: 'T-01', testSelector: 'src/example.spec.ts::required', runnerProfileKey: 'json-evidence',
+      }],
+      executionFence: lease.lease.generation,
+    });
+    expect(bound).toMatchObject([{
+      key: 'T-01',
+      runnerProfileKey: 'json-evidence',
+      testSelector: 'src/example.spec.ts::required',
+    }]);
+    await expect(client.workflowEvent.findFirst({
+      where: { workItemId: bound[0].workItemId, type: 'TEST_SELECTORS_BOUND' },
+    })).resolves.toMatchObject({ payloadJson: expect.stringContaining('src/example.spec.ts::required') });
+    await client.workItem.delete({ where: { id: bound[0].workItemId } });
+  });
+
   it('refuses authorization with a dirty baseline', async () => {
+    const authorizationCount = await client.authorization.count();
     snapshot = {
       branch: 'dev', sha: 'sha-1', dirty: true, changedFiles: ['src/changed.ts'], fingerprint: 'fingerprint-dirty', contentFingerprint: 'content-dirty',
     };
 
     await expect(authorize('dirty')).rejects.toMatchObject({ code: 'DIRTY_BASELINE' });
-    expect(await client.authorization.count()).toBe(0);
+    expect(await client.authorization.count()).toBe(authorizationCount);
     snapshot = {
       branch: 'dev', sha: 'sha-1', dirty: false, changedFiles: [], fingerprint: 'fingerprint-1', contentFingerprint: 'content-1',
     };

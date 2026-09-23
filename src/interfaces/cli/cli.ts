@@ -297,6 +297,24 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('bind-test-selectors')
+    .description('Associa seletores reais do runner a testes planejados sem alterar critérios ou riscos')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--tests <json>', 'lista de {key,testSelector,runnerProfileKey?}')
+    .option('--fence <generation>', 'geração vigente da lease', parseNumber)
+    .action(async (options, command) => {
+      emit(command, await app.ledger.bindTestSelectors({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        tests: parseJson(options.tests, 'tests'),
+        executionFence: options.fence,
+      }), stdout);
+    });
+
+  item
     .command('claim')
     .description('Reserva uma fatia autorizada para um agente por um período')
     .requiredOption('--project <key>')
@@ -660,7 +678,7 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     .requiredOption('--program <program>')
     .requiredOption('--args <json>')
     .option('--cwd <path>', '.',)
-    .option('--parser <parser>', 'JEST|GENERIC', 'JEST')
+    .option('--parser <parser>', 'JEST|JEST_JSON|PLAYWRIGHT_JSON|GENERIC', 'JEST')
     .option('--timeout <seconds>', 'timeout em segundos', parseNumber)
     .option('--max-output <bytes>', 'limite de saída em bytes', parseNumber)
     .option('--capabilities <json>', 'capacidades verificáveis')

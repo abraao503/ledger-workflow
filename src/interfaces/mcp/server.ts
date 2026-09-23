@@ -68,7 +68,7 @@ export function createMcpServer(app: WorkflowApp): McpServer {
         })).optional(),
         tests: z.array(z.object({
           key: z.string(), name: z.string(), purpose: z.enum(['RED', 'GREEN', 'CHECK']),
-          runnerProfileKey: z.string().optional(), criterionKey: z.string().optional(),
+          runnerProfileKey: z.string().optional(), testSelector: z.string().min(1).optional(), criterionKey: z.string().optional(),
         })).optional(),
       },
     },
@@ -309,11 +309,31 @@ export function createMcpServer(app: WorkflowApp): McpServer {
           name: z.string(),
           purpose: z.enum(['RED', 'GREEN', 'CHECK']),
           runnerProfileKey: z.string().optional(),
+          testSelector: z.string().min(1).optional(),
           criterionKey: z.string().optional(),
         })),
       },
     },
     async (input) => runTool(() => app.ledger.defineWorkItem(input)),
+  );
+
+  server.registerTool(
+    'workflow_bind_test_selectors',
+    {
+      description: 'Vincula seletores de relatório a testes planejados sem alterar seus critérios, riscos ou finalidade.',
+      inputSchema: {
+        projectKey: z.string(),
+        featureKey: z.string(),
+        itemKey: z.string(),
+        tests: z.array(z.object({
+          key: z.string(),
+          testSelector: z.string().min(1),
+          runnerProfileKey: z.string(),
+        })).min(1),
+        executionFence: z.number().int().positive().optional(),
+      },
+    },
+    async (input) => runTool(() => app.ledger.bindTestSelectors(input)),
   );
 
   server.registerTool(

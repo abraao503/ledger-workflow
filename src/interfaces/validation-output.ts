@@ -19,6 +19,7 @@ export async function formatValidationResult(
     itemState: result.itemState,
     actionRequired: result.actionRequired,
     pendingRepositoryKeys: result.pendingRepositoryKeys,
+    pendingTestKeys: result.pendingTestKeys,
     logAvailable: Boolean(result.validation.logBlob),
   };
 
@@ -49,6 +50,26 @@ export async function formatValidationResult(
       repositoryKeys: result.pendingRepositoryKeys ?? [],
       rerunRequired: false,
       note: 'Execute GREEN uma vez em cada repositório autorizado pendente; não repita o perfil já aprovado.',
+    };
+  }
+
+  if (result.actionRequired === 'GREEN_TEST_EVIDENCE_INCOMPLETE') {
+    output.nextAction = {
+      command: 'validate run',
+      purpose: 'GREEN',
+      testKeys: result.pendingTestKeys ?? [],
+      rerunRequired: true,
+      note: 'Corrija o seletor do teste ou o perfil JSON; GREEN não foi confirmado porque faltou evidência obrigatória.',
+    };
+  }
+
+  if (result.actionRequired === 'CHECK_TEST_EVIDENCE_INCOMPLETE') {
+    output.nextAction = {
+      command: 'validate run',
+      purpose: 'CHECK',
+      testKeys: result.pendingTestKeys ?? [],
+      rerunRequired: true,
+      note: 'CHECK não correspondeu aos testes planejados; ajuste o seletor ou o perfil JSON e valide novamente.',
     };
   }
 

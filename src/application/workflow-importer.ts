@@ -7,6 +7,7 @@ import { workItemStates } from '../domain/workflow-state.js';
 import { validateWorkItemScope } from '../domain/work-item-scope.js';
 import { fail } from './errors.js';
 import { decodeJson, encodeJson } from './json.js';
+import { validationParserValues } from './types.js';
 
 const repositorySchema = z.object({
   key: z.string().min(1),
@@ -45,6 +46,7 @@ const testSchema = z.object({
   name: z.string(),
   purpose: z.enum(['RED', 'GREEN', 'CHECK']),
   runnerProfileKey: z.string().optional(),
+  testSelector: z.string().min(1).optional(),
   criterionKey: z.string().optional(),
 });
 
@@ -175,7 +177,7 @@ const validationProfileSchema = z.object({
   program: z.enum(['npm', 'npx', 'node', 'pnpm', 'yarn']),
   args: z.array(z.string()).default([]),
   cwd: z.string().default('.'),
-  parser: z.enum(['JEST', 'GENERIC']),
+  parser: z.enum(validationParserValues),
   capabilities: z.array(z.enum(['BUILD', 'LINT', 'API_INTEGRATION', 'API_READ', 'READ_AFTER_WRITE', 'DATABASE_PERSISTENCE', 'MIGRATION', 'UI_INTERACTION', 'UI_RELOAD', 'PRIVACY_NEGATIVE', 'TENANT_ISOLATION', 'REALTIME_RECONCILIATION', 'ASYNC_CONSISTENCY', 'EXTERNAL_CONTRACT'])).default([]),
   timeoutSeconds: z.number().int().positive().default(60),
   maxOutputBytes: z.number().int().min(1_024).max(2_000_000).default(2_000_000),
@@ -439,6 +441,7 @@ export class WorkflowImporter {
                 name: testInput.name,
                 purpose: testInput.purpose,
                 runnerProfileKey: testInput.runnerProfileKey,
+                testSelector: testInput.testSelector,
               },
               update: {
                 criterionId: testInput.criterionKey
@@ -447,6 +450,7 @@ export class WorkflowImporter {
                 name: testInput.name,
                 purpose: testInput.purpose,
                 runnerProfileKey: testInput.runnerProfileKey,
+                testSelector: testInput.testSelector,
               },
             });
           }

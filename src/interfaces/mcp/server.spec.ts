@@ -26,6 +26,7 @@ describe('workflow MCP server', () => {
           pending: { key: 'SIZE-REQUEST', input },
           item: { state: 'DRAFT' },
         }),
+        bindTestSelectors: async (input: unknown) => ({ bound: input }),
         createTask: async (input: unknown) => ({ taskType: 'PATCH', input }),
         getContext: async (input: { projectKey: string }) => {
           if (input.projectKey === 'missing') {
@@ -68,6 +69,7 @@ describe('workflow MCP server', () => {
       'workflow_add_dependency',
       'workflow_authorize',
       'workflow_authorize_integration',
+      'workflow_bind_test_selectors',
       'workflow_claim_item',
       'workflow_cleanup_worktrees',
       'workflow_request_slice_size_exception',
@@ -171,6 +173,26 @@ describe('workflow MCP server', () => {
     expect(visualTaskResult.isError).not.toBe(true);
     expect(visualTaskResult.content).toEqual([{
       type: 'text', text: expect.stringContaining('"riskTags":["VISUAL_ONLY"]'),
+    }]);
+
+    const bindSelectorsResult = await client.callTool({
+      name: 'workflow_bind_test_selectors',
+      arguments: {
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '05',
+        tests: [{
+          key: 'T-01',
+          testSelector: 'src/example.spec.ts::example behavior',
+          runnerProfileKey: 'workflow-json',
+        }],
+        executionFence: 1,
+      },
+    });
+    expect(bindSelectorsResult.isError).not.toBe(true);
+    expect(bindSelectorsResult.content).toEqual([{
+      type: 'text',
+      text: expect.stringContaining('src/example.spec.ts::example behavior'),
     }]);
 
     const planResult = await client.callTool({

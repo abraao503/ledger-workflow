@@ -21,6 +21,13 @@ describe('WorkflowImporter', () => {
       importKey: 'legacy-1',
       project: { key: 'carara', name: 'Carará', rootPath: '/tmp/carara' },
       repositories: [{ key: 'api', path: '/tmp/carara/api', expectedBranch: 'dev' }],
+      validationProfiles: [{
+        repositoryKey: 'api',
+        key: 'jest-json',
+        program: 'npm',
+        args: ['test', '--', '--json'],
+        parser: 'JEST_JSON',
+      }],
       templates: [{
         key: 'carara-gates',
         name: 'G0-G7',
@@ -48,7 +55,14 @@ describe('WorkflowImporter', () => {
             expectedOutcome: 'resultado',
           }],
           criteria: [{ key: 'AC-01', statement: 'Sem vazamento' }],
-          tests: [{ key: 'T-01', name: 'falha', purpose: 'RED', criterionKey: 'AC-01' }],
+          tests: [{
+            key: 'T-01',
+            name: 'falha',
+            purpose: 'RED',
+            runnerProfileKey: 'jest-json',
+            testSelector: 'src/example.spec.ts::example behavior',
+            criterionKey: 'AC-01',
+          }],
         }],
       }],
       summaries: [{
@@ -73,6 +87,13 @@ describe('WorkflowImporter', () => {
     expect(await database.client.useCase.count()).toBe(1);
     expect(await database.client.historySummary.count()).toBe(1);
     expect(await database.client.workflowEvent.count({ where: { type: 'IMPORT_APPLIED' } })).toBe(1);
+    await expect(database.client.validationProfile.findFirstOrThrow({ where: { key: 'jest-json' } }))
+      .resolves.toMatchObject({ parser: 'JEST_JSON' });
+    await expect(database.client.testSpecification.findFirstOrThrow({ where: { key: 'T-01' } }))
+      .resolves.toMatchObject({
+        runnerProfileKey: 'jest-json',
+        testSelector: 'src/example.spec.ts::example behavior',
+      });
 
     const context = await new WorkflowLedger(database.client).getContext({
       projectKey: 'carara',

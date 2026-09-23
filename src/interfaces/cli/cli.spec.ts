@@ -62,6 +62,36 @@ describe('workflow CLI', () => {
     }]);
   });
 
+  it('binds runner selectors to planned tests with the active execution fence', async () => {
+    const calls: unknown[] = [];
+    const app = { ledger: { bindTestSelectors: async (input: unknown) => {
+      calls.push(input);
+      return { key: '01' };
+    } } } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+    cli.commands.find((command) => command.name() === 'item')
+      ?.commands.find((command) => command.name() === 'bind-test-selectors')?.exitOverride();
+
+    await cli.parseAsync([
+      'node', 'workflow', 'item', 'bind-test-selectors',
+      '--project', 'workflow', '--feature', 'P9', '--item', '01',
+      '--tests', '[{"key":"T-01","testSelector":"src/example.spec.ts::example behavior","runnerProfileKey":"workflow-json"}]',
+      '--fence', '7',
+    ]);
+
+    expect(calls).toEqual([{
+      projectKey: 'workflow',
+      featureKey: 'P9',
+      itemKey: '01',
+      tests: [{
+        key: 'T-01',
+        testSelector: 'src/example.spec.ts::example behavior',
+        runnerProfileKey: 'workflow-json',
+      }],
+      executionFence: 7,
+    }]);
+  });
+
   it('passes structured arguments to the ledger and supports compact JSON output', async () => {
     const calls: unknown[] = [];
     const result = { id: 'project-1', key: 'carara' };

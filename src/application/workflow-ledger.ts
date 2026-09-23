@@ -16,6 +16,7 @@ import {
 } from '../domain/history-retention.js';
 import {
   WorkflowStateMachine,
+  WorkflowTransitionError,
   type TransitionContext,
   type WorkItemState,
 } from '../domain/workflow-state.js';
@@ -45,10 +46,12 @@ import {
   evidenceKindValues,
   riskTagValues,
   validationCapabilityValues,
+  validationParserValues,
 } from './types.js';
 import type {
   AddRepositoryInput,
   AmendDraftValidationPlanInput,
+  BindTestSelectorsInput,
   ApproveSliceSizeInput,
   AuthorizeWorkItemInput,
   ClaimWorkItemInput,
@@ -467,6 +470,7 @@ export class WorkflowLedger {
             name: test.name,
             purpose: test.purpose,
             runnerProfileKey: test.runnerProfileKey,
+            testSelector: test.testSelector,
           },
         });
       }
@@ -748,6 +752,7 @@ export class WorkflowLedger {
             name: test.name,
             purpose: test.purpose,
             runnerProfileKey: test.runnerProfileKey,
+            testSelector: test.testSelector,
           },
         });
       }
@@ -2664,6 +2669,104 @@ export class WorkflowLedger {
     });
   }
 
+  async bindTestSelectors(input: BindTestSelectorsInput) {
+    const item = await this.requireItem(input.projectKey, input.featureKey, input.itemKey);
+    await this.requireActiveExecutionFence(item.id, input.executionFence);
+    if (!['AUTHORIZED', 'TESTS_DEFINED', 'RED_CONFIRMED', 'IMPLEMENTING'].includes(item.state)) {
+      fail('TEST_SELECTOR_BINDING_STATE_INVALID');
+    }
+    if (input.tests.length === 0) {
+      fail('TEST_SELECTOR_BINDING_EMPTY');
+    }
+
+    const scope = decodeWorkItemScope(item.scopeJson);
+    const validScope = scope ?? fail('WORK_ITEM_SCOPE_REQUIRED');
+    const repositoryKeys = validScope.repositories.map((repository) => repository.repositoryKey);
+    const project = await this.requireProject(input.projectKey);
+    const profiles = await this.db.validationProfile.findMany({
+      where: {
+        active: true,
+        key: { in: input.tests.map((test) => test.runnerProfileKey) },
+        repository: { projectId: project.id, key: { in: repositoryKeys } },
+      },
+      include: { repository: true },
+    });
+    const existingTests = await this.db.testSpecification.findMany({
+      where: { workItemId: item.id },
+      select: { key: true, runnerProfileKey: true, testSelector: true },
+    });
+    const existingByKey = new Map(existingTests.map((test) => [test.key, test]));
+    const keys = new Set<string>();
+    const selectors = new Set<string>();
+
+    for (const test of input.tests) {
+      const testKey = test.key.trim();
+      const selector = test.testSelector.trim();
+      if (!testKey || keys.has(testKey)) {
+        fail('DUPLICATE_TEST_KEY');
+      }
+      if (!selector || selectors.has(selector)) {
+        fail('DUPLICATE_TEST_SELECTOR');
+      }
+      if (!existingByKey.has(testKey)) {
+        fail('TEST_SPECIFICATION_NOT_FOUND');
+      }
+      keys.add(testKey);
+      selectors.add(selector);
+    }
+
+    for (const test of existingTests) {
+      if (!keys.has(test.key) && test.testSelector && selectors.has(test.testSelector)) {
+        fail('DUPLICATE_TEST_SELECTOR');
+      }
+    }
+
+    const prepared = input.tests.map((test) => {
+      const profile = profiles.find((candidate) => candidate.key === test.runnerProfileKey);
+      if (!profile) {
+        fail('VALIDATION_PROFILE_NOT_FOUND');
+      }
+      const currentProfile = profile as NonNullable<typeof profile>;
+      if (!['JEST_JSON', 'PLAYWRIGHT_JSON'].includes(currentProfile.parser)) {
+        fail('STRUCTURED_TEST_PARSER_REQUIRED');
+      }
+      return { ...test, key: test.key.trim(), testSelector: test.testSelector.trim() };
+    });
+
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, item.feature.projectId);
+      await this.requireActiveExecutionFence(item.id, input.executionFence, transaction);
+      const previousTests = existingTests.map((test) => ({
+        key: test.key,
+        runnerProfileKey: test.runnerProfileKey,
+        testSelector: test.testSelector,
+      }));
+      for (const test of prepared) {
+        await transaction.testSpecification.update({
+          where: { workItemId_key: { workItemId: item.id, key: test.key } },
+          data: {
+            testSelector: test.testSelector,
+            runnerProfileKey: test.runnerProfileKey,
+          },
+        });
+      }
+      const updated = await transaction.testSpecification.findMany({
+        where: { workItemId: item.id },
+        orderBy: { key: 'asc' },
+      });
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: item.feature.projectId,
+          featureId: item.featureId,
+          workItemId: item.id,
+          type: 'TEST_SELECTORS_BOUND',
+          payloadJson: encodeJson({ previousTests, tests: prepared }),
+        },
+      });
+      return updated;
+    });
+  }
+
   private async markIntegrationInProgress(
     item: WorkItemWithFeature,
     approvalId: string,
@@ -2804,6 +2907,10 @@ export class WorkflowLedger {
     }
 
     const allowedPrograms = new Set(['npm', 'npx', 'node', 'pnpm', 'yarn']);
+
+    if (!validationParserValues.includes(input.parser)) {
+      fail('VALIDATION_PARSER_INVALID');
+    }
 
     if (!allowedPrograms.has(input.program)) {
       fail('VALIDATION_PROGRAM_NOT_ALLOWED');
@@ -3123,7 +3230,21 @@ export class WorkflowLedger {
     }
     const context = await this.getTransitionContext(item, input);
 
-    this.stateMachine.assertTransition(from, to, context);
+    try {
+      this.stateMachine.assertTransition(from, to, context);
+    } catch (error) {
+      if (
+        error instanceof WorkflowTransitionError &&
+        error.code === 'VALIDATION_EVIDENCE_INCOMPLETE' &&
+        context.pendingTestKeys?.length
+      ) {
+        throw new WorkflowTransitionError(error.code, error.message, {
+          ...error.details,
+          pendingTestKeys: context.pendingTestKeys,
+        });
+      }
+      throw error;
+    }
 
     return this.db.$transaction(async (transaction) => {
       await this.lockProjectForWrite(transaction, item.feature.projectId);
@@ -4806,7 +4927,7 @@ export class WorkflowLedger {
   private async getTransitionContext(
     item: WorkItemWithFeature,
     input: Pick<TransitionWorkItemInput, 'to' | 'reason' | 'commitSha'>,
-  ): Promise<TransitionContext> {
+  ): Promise<TransitionContext & { pendingTestKeys?: string[] }> {
     const usesGreenEvidence = ['GREEN_CONFIRMED', 'READY_FOR_REVIEW', 'APPROVED', 'CLOSED']
       .includes(input.to);
     const [authorization, tests, red, review, greenContext, sliceSizeContext, validationContext] = await Promise.all([
@@ -4916,6 +5037,7 @@ export class WorkflowLedger {
       sliceSizeApproved: sliceSizeContext.approved,
       validationPlanComplete: validationContext.validationPlanComplete,
       validationEvidenceComplete: validationContext.validationEvidenceComplete,
+      pendingTestKeys: validationContext.pendingTestKeys,
       riskContractStable: validationContext.riskContractStable,
     };
   }
@@ -4926,6 +5048,7 @@ export class WorkflowLedger {
   ): Promise<{
     validationPlanComplete: boolean;
     validationEvidenceComplete: boolean;
+    pendingTestKeys: string[];
     riskContractStable: boolean;
   }> {
     const riskTags = decodeJson<string[]>(item.riskTagsJson, []);
@@ -4955,9 +5078,15 @@ export class WorkflowLedger {
       'GREEN_CONFIRMED',
       'READY_FOR_REVIEW',
     ].includes(target);
-    const validationEvidenceComplete = !requiresValidationEvidence || !hasRiskContract
-      ? true
-      : (await this.getRequiredCapabilityEvidence(item)).complete;
+    const [capabilityEvidence, testEvidence] = await Promise.all([
+      requiresValidationEvidence && hasRiskContract
+        ? this.getRequiredCapabilityEvidence(item)
+        : Promise.resolve({ complete: true, missingCapabilities: [] }),
+      requiresValidationEvidence
+        ? this.getStructuredGreenTestEvidence(item)
+        : Promise.resolve({ complete: true, pendingTestKeys: [] }),
+    ]);
+    const validationEvidenceComplete = capabilityEvidence.complete && testEvidence.complete;
 
     const authorizationEvent = await this.db.workflowEvent.findFirst({
       where: { workItemId: item.id, type: 'ITEM_AUTHORIZED' },
@@ -4979,8 +5108,163 @@ export class WorkflowLedger {
     return {
       validationPlanComplete,
       validationEvidenceComplete,
+      pendingTestKeys: testEvidence.pendingTestKeys,
       riskContractStable,
     };
+  }
+
+  private async getStructuredGreenTestEvidence(item: WorkItemWithFeature): Promise<{
+    complete: boolean;
+    pendingTestKeys: string[];
+  }> {
+    const tests = await this.db.testSpecification.findMany({
+      where: { workItemId: item.id, purpose: 'GREEN' },
+      include: { criterion: { select: { key: true } } },
+      orderBy: { key: 'asc' },
+    });
+    const profileKeys = [...new Set(tests.flatMap((test) => test.runnerProfileKey ? [test.runnerProfileKey] : []))];
+    if (!tests.length) {
+      return { complete: true, pendingTestKeys: [] };
+    }
+
+    const scope = decodeWorkItemScope(item.scopeJson);
+    const repositoryKeys = scope?.repositories.map((repository) => repository.repositoryKey) ?? [];
+    const repositories = await this.db.repository.findMany({
+      where: { projectId: item.feature.projectId, key: { in: repositoryKeys } },
+      select: { id: true, key: true, path: true },
+    });
+    const profiles = await this.db.validationProfile.findMany({
+      where: {
+        active: true,
+        key: { in: profileKeys },
+        repositoryId: { in: repositories.map((repository) => repository.id) },
+      },
+      include: { repository: true },
+    });
+    const strictTests = tests;
+    if (!strictTests.length) {
+      return { complete: true, pendingTestKeys: [] };
+    }
+
+    const criteria = await this.db.acceptanceCriterion.findMany({
+      where: { workItemId: item.id },
+      select: { key: true, statement: true, required: true, evidenceKind: true, polarity: true },
+      orderBy: { key: 'asc' },
+    });
+    const allTests = await this.db.testSpecification.findMany({
+      where: { workItemId: item.id },
+      include: { criterion: { select: { key: true } } },
+      orderBy: { key: 'asc' },
+    });
+    const testPlanFingerprint = createHash('sha256').update(JSON.stringify({
+      riskTagsJson: item.riskTagsJson,
+      scopeJson: item.scopeJson,
+      criteria,
+      tests: allTests.map((test) => ({
+        key: test.key,
+        name: test.name,
+        purpose: test.purpose,
+        runnerProfileKey: test.runnerProfileKey,
+        testSelector: test.testSelector,
+        criterionKey: test.criterion?.key ?? null,
+      })),
+    })).digest('hex');
+    const structuredProfiles = profiles.filter((profile) => (
+      profile.parser === 'JEST_JSON' || profile.parser === 'PLAYWRIGHT_JSON'
+    ));
+    const profileFingerprints = new Map(structuredProfiles.map((profile) => [profile.id, createHash('sha256')
+      .update(JSON.stringify({
+        id: profile.id,
+        key: profile.key,
+        parser: profile.parser,
+        program: profile.program,
+        args: decodeJson<string[]>(profile.argsJson, []),
+        cwd: profile.cwd,
+        timeoutSeconds: profile.timeoutSeconds,
+        maxOutputBytes: profile.maxOutputBytes,
+      }))
+      .digest('hex')]));
+    const profileIds = structuredProfiles.map((profile) => profile.id);
+    const [allValidations, lastInvalidation] = profileIds.length
+      ? await Promise.all([
+          this.db.validationRun.findMany({
+            where: {
+              workItemId: item.id,
+              profileId: { in: profileIds },
+              purpose: 'GREEN',
+              resultKind: 'PASS',
+            },
+            include: { profile: { include: { repository: true } } },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+          this.db.workflowEvent.findFirst({
+            where: { workItemId: item.id, type: 'GREEN_INVALIDATED' },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          }),
+        ])
+      : [[], null] as const;
+    const invalidationPayload = lastInvalidation
+      ? decodeJson<{ invalidatedThroughValidationId?: string }>(lastInvalidation.payloadJson, {})
+      : {};
+    const boundaryIndex = invalidationPayload.invalidatedThroughValidationId
+      ? allValidations.findIndex((validation) => (
+          validation.id === invalidationPayload.invalidatedThroughValidationId
+        ))
+      : -1;
+    const validations = !lastInvalidation
+      ? allValidations
+      : boundaryIndex >= 0
+        ? allValidations.slice(0, boundaryIndex)
+        : allValidations.filter((validation) => validation.createdAt > lastInvalidation.createdAt);
+    const currentSnapshots = new Map<string, Awaited<ReturnType<GitReadPort['capture']>>>();
+    const pendingTestKeys: string[] = [];
+
+    for (const test of strictTests) {
+      const candidates = structuredProfiles.filter((profile) => profile.key === test.runnerProfileKey);
+      if (!test.testSelector || candidates.length === 0) {
+        pendingTestKeys.push(test.key);
+        continue;
+      }
+      let covered = false;
+      for (const validation of validations) {
+        if (!candidates.some((profile) => profile.id === validation.profileId)) {
+          continue;
+        }
+        const summary = decodeJson<{
+          fingerprint?: string;
+          contentFingerprint?: string;
+          testPlanFingerprint?: string;
+          profileFingerprint?: string;
+          coveredTestResults?: Array<{ key: string; selector: string; status: string }>;
+        }>(validation.summaryJson, {});
+        const resultsMatch = summary.coveredTestResults?.some((result) => (
+          result.key === test.key && result.selector === test.testSelector && result.status === 'PASSED'
+        ));
+        const profileFingerprint = profileFingerprints.get(validation.profileId);
+        if (!resultsMatch || summary.testPlanFingerprint !== testPlanFingerprint ||
+          summary.profileFingerprint !== profileFingerprint) {
+          continue;
+        }
+        let currentSnapshot = currentSnapshots.get(validation.profile.repository.id);
+        if (!currentSnapshot) {
+          currentSnapshot = await this.git.capture(await this.getExecutionRepositoryPathById(
+            item.id,
+            validation.profile.repository.id,
+            validation.profile.repository.path,
+          ));
+          currentSnapshots.set(validation.profile.repository.id, currentSnapshot);
+        }
+        if (matchesGreenSnapshot(summary, validation, currentSnapshot)) {
+          covered = true;
+          break;
+        }
+      }
+      if (!covered) {
+        pendingTestKeys.push(test.key);
+      }
+    }
+
+    return { complete: pendingTestKeys.length === 0, pendingTestKeys };
   }
 
   private async getRequiredCapabilityEvidence(item: WorkItemWithFeature): Promise<{

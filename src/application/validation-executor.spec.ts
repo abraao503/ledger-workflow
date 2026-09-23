@@ -10,6 +10,7 @@ import {
   createCommandRunner,
   ValidationExecutor,
 } from './validation-executor.js';
+import * as validationExecutorModule from './validation-executor.js';
 import { WorkflowLedger } from './workflow-ledger.js';
 import { createTestDatabase, type TestDatabase } from '../infrastructure/db/test-database.js';
 
@@ -60,7 +61,7 @@ describe('validation executor', () => {
           stderr: '',
           timedOut: false,
         }, 'GENERIC'),
-      ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
+      ).toEqual({ status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' });
     });
 
     it('classifies a known Jest test-discovery failure as a structural test failure', () => {
@@ -74,11 +75,11 @@ describe('validation executor', () => {
       ).toEqual({ status: 'COMPLETED', resultKind: 'TEST_FAILURE' });
     });
 
-    it('distinguishes a behavioral RED from a structural RED', () => {
+    it('keeps text-only RED structural when it cannot identify a planned test', () => {
       expect(classifyRedEvidence(
         'Test Suites: 1 failed, 1 total\nTests: 1 failed, 3 total',
         'JEST',
-      )).toEqual({ redEvidenceKind: 'BEHAVIORAL', testsTotal: 3 });
+      )).toEqual({ redEvidenceKind: 'STRUCTURAL', testsTotal: 3 });
       expect(classifyRedEvidence(
         'Test Suites: 1 failed, 1 total\nTests: 0 total\nCannot find module',
         'JEST',
@@ -204,6 +205,7 @@ describe('validation executor', () => {
         phaseKey: 'G1',
         position: 1,
         title: 'Fatia',
+        scope: { repositories: [{ repositoryKey: 'api', paths: ['src/**'] }] },
         useCases: [
           {
             key: 'UC-01',
@@ -269,6 +271,18 @@ describe('validation executor', () => {
         timedOut: false,
       };
       await client.validationRun.deleteMany();
+      const testItem = await client.workItem.findFirstOrThrow({
+        where: { key: '01', feature: { key: 'E6' } },
+      });
+      await client.testSpecification.deleteMany({ where: { workItemId: testItem.id } });
+      await client.testSpecification.create({
+        data: {
+          workItemId: testItem.id,
+          key: 'T-RED',
+          name: 'falha esperada',
+          purpose: 'RED',
+        },
+      });
       await client.workItem.updateMany({
         where: { key: '01', feature: { key: 'E6' } },
         data: { state: 'TESTS_DEFINED', currentSha: 'sha-1' },
@@ -284,7 +298,7 @@ describe('validation executor', () => {
       await database.close();
     });
 
-    it('runs the registered profile through rtk and records RED without raw output in the summary', async () => {
+    it('runs the registered text profile but requires a reason before confirming RED', async () => {
       const result = await runValidation({
         projectKey: 'carara',
         featureKey: 'E6',
@@ -302,8 +316,18 @@ describe('validation executor', () => {
       });
       expect(result.validation.summaryJson).not.toContain('Test Suites:');
       expect(result.validation.logBlob).toBeInstanceOf(Uint8Array);
-      expect(result.classification.redEvidenceKind).toBe('BEHAVIORAL');
-      expect(result.itemState).toBe('RED_CONFIRMED');
+      expect(result.classification.redEvidenceKind).toBe('STRUCTURAL');
+      expect(result.actionRequired).toBe('STRUCTURAL_RED_REASON_REQUIRED');
+      expect(result.itemState).toBe('TESTS_DEFINED');
+      const confirmed = await ledger.confirmStructuralRed({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        validationId: result.validation.id,
+        reason: 'o perfil textual não identifica qual teste falhou',
+        executionFence,
+      });
+      expect(confirmed.state).toBe('RED_CONFIRMED');
       await expect(client.workItem.findFirstOrThrow({ where: { key: '01' } }))
         .resolves.toMatchObject({ state: 'RED_CONFIRMED' });
     });
@@ -387,6 +411,29 @@ describe('validation executor', () => {
         fingerprint: 'fingerprint-1',
       });
 
+      const testItem = await client.workItem.findFirstOrThrow({
+        where: { key: '01', feature: { key: 'E6' } },
+      });
+      await client.testSpecification.create({
+        data: {
+          workItemId: testItem.id,
+          key: 'T-CHECK-PLAN',
+          name: 'mesmo código, plano alterado',
+          purpose: 'CHECK',
+          runnerProfileKey: 'related',
+        },
+      });
+      const planChangedCheck = await runValidation({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'CHECK',
+      });
+      expect(requests).toHaveLength(callsBeforeCheck + 1);
+      expect(planChangedCheck.reused).toBe(false);
+
       currentFingerprint = 'fingerprint-2';
       const changedCheck = await runValidation({
         projectKey: 'carara',
@@ -396,8 +443,217 @@ describe('validation executor', () => {
         profileKey: 'related',
         purpose: 'CHECK',
       });
-      expect(requests).toHaveLength(callsBeforeCheck + 1);
+      expect(requests).toHaveLength(callsBeforeCheck + 2);
       expect(changedCheck.reused).toBe(false);
+
+      await ledger.invalidateGreen({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        reason: 'cobrir a fronteira explícita de invalidação do GREEN',
+        executionFence,
+      });
+      await client.workItem.updateMany({
+        where: { key: '01', feature: { key: 'E6' } },
+        data: { state: 'READY_FOR_REVIEW' },
+      });
+      const invalidatedCheck = await runValidation({
+        projectKey: 'carara',
+        featureKey: 'E6',
+        itemKey: '01',
+        repositoryKey: 'api',
+        profileKey: 'related',
+        purpose: 'CHECK',
+      });
+      expect(requests).toHaveLength(callsBeforeCheck + 3);
+      expect(invalidatedCheck.reused).toBe(false);
+    });
+
+    it('blocks structured GREEN without the required selector, including direct state transitions', async () => {
+      await ledger.createValidationProfile({
+        projectKey: 'carara',
+        repositoryKey: 'api',
+        key: 'structured-json',
+        program: 'npm',
+        args: ['test'],
+        parser: 'JEST_JSON',
+      });
+      const testItem = await client.workItem.findFirstOrThrow({
+        where: { key: '01', feature: { key: 'E6' } },
+      });
+      await client.testSpecification.create({
+        data: {
+          workItemId: testItem.id,
+          key: 'T-STRUCTURED',
+          name: 'comportamento obrigatório',
+          purpose: 'GREEN',
+          runnerProfileKey: 'structured-json',
+          testSelector: 'src/checklist.spec.ts::Required behavior',
+        },
+      });
+      await client.testSpecification.create({
+        data: {
+          workItemId: testItem.id,
+          key: 'T-STRUCTURED-CHECK',
+          name: 'CHECK observável independente',
+          purpose: 'CHECK',
+          runnerProfileKey: 'structured-json',
+          testSelector: 'src/checklist.spec.ts::Unrelated behavior',
+        },
+      });
+      await client.workItem.update({ where: { id: testItem.id }, data: { state: 'IMPLEMENTING' } });
+      const report = (fullName: string) => JSON.stringify({
+        testResults: [{
+          name: '/tmp/carara/api/src/checklist.spec.ts',
+          assertionResults: [{ fullName, status: 'passed' }],
+        }],
+      });
+
+      try {
+        nextResult = { exitCode: 0, stdout: report('Unrelated behavior'), stderr: '', timedOut: false };
+        const incomplete = await runValidation({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          repositoryKey: 'api',
+          profileKey: 'structured-json',
+          purpose: 'GREEN',
+        });
+        expect(incomplete).toMatchObject({
+          itemState: 'IMPLEMENTING',
+          actionRequired: 'GREEN_TEST_EVIDENCE_INCOMPLETE',
+          pendingTestKeys: ['T-STRUCTURED'],
+        });
+        await expect(ledger.transitionWorkItem({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          to: 'GREEN_CONFIRMED',
+          executionFence,
+        })).rejects.toMatchObject({
+          code: 'VALIDATION_EVIDENCE_INCOMPLETE',
+          details: { pendingTestKeys: ['T-STRUCTURED'] },
+        });
+
+        const callsBeforeCheck = requests.length;
+        await client.workItem.update({ where: { id: testItem.id }, data: { state: 'READY_FOR_REVIEW' } });
+        nextResult = { exitCode: 0, stdout: report('Unrelated behavior'), stderr: '', timedOut: false };
+        const checkAfterIncompleteGreen = await runValidation({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          repositoryKey: 'api',
+          profileKey: 'structured-json',
+          purpose: 'CHECK',
+        });
+        expect(requests).toHaveLength(callsBeforeCheck + 1);
+        expect(checkAfterIncompleteGreen.reused).toBe(false);
+
+        await client.workItem.update({ where: { id: testItem.id }, data: { state: 'IMPLEMENTING' } });
+        nextResult = { exitCode: 0, stdout: report('Required behavior'), stderr: '', timedOut: false };
+        const complete = await runValidation({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          repositoryKey: 'api',
+          profileKey: 'structured-json',
+          purpose: 'GREEN',
+        });
+        expect(complete.itemState).toBe('GREEN_CONFIRMED');
+        expect(JSON.parse(complete.validation.summaryJson)).toMatchObject({
+          coveredTestKeys: ['T-STRUCTURED'],
+          testEvidence: { complete: true, missingKeys: [], failedKeys: [] },
+        });
+
+        await ledger.invalidateGreen({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          reason: 'garantir que GREEN antigo não satisfaça uma execução posterior incompleta',
+          executionFence,
+        });
+        nextResult = { exitCode: 0, stdout: report('Unrelated behavior'), stderr: '', timedOut: false };
+        const incompleteAfterInvalidation = await runValidation({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          repositoryKey: 'api',
+          profileKey: 'structured-json',
+          purpose: 'GREEN',
+        });
+        expect(incompleteAfterInvalidation).toMatchObject({
+          itemState: 'IMPLEMENTING',
+          actionRequired: 'GREEN_TEST_EVIDENCE_INCOMPLETE',
+        });
+        await expect(ledger.transitionWorkItem({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          to: 'GREEN_CONFIRMED',
+          executionFence,
+        })).rejects.toMatchObject({
+          code: 'VALIDATION_EVIDENCE_INCOMPLETE',
+          details: { pendingTestKeys: ['T-STRUCTURED'] },
+        });
+      } finally {
+        await client.testSpecification.deleteMany({
+          where: { workItemId: testItem.id, key: { in: ['T-STRUCTURED', 'T-STRUCTURED-CHECK'] } },
+        });
+        await client.workItem.update({ where: { id: testItem.id }, data: { state: 'TESTS_DEFINED' } });
+      }
+    });
+
+    it('blocks legacy GREEN profiles when a planned GREEN test has no structured selector', async () => {
+      const testItem = await client.workItem.findFirstOrThrow({
+        where: { key: '01', feature: { key: 'E6' } },
+      });
+      await client.testSpecification.create({
+        data: {
+          workItemId: testItem.id,
+          key: 'T-LEGACY-GREEN',
+          name: 'teste obrigatório sem seletor',
+          purpose: 'GREEN',
+          runnerProfileKey: 'related',
+        },
+      });
+      await client.workItem.update({ where: { id: testItem.id }, data: { state: 'IMPLEMENTING' } });
+      nextResult = {
+        exitCode: 0,
+        stdout: 'Test Suites: 1 passed, 1 total\nTests: 1 passed, 1 total',
+        stderr: '',
+        timedOut: false,
+      };
+
+      try {
+        const result = await runValidation({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          repositoryKey: 'api',
+          profileKey: 'related',
+          purpose: 'GREEN',
+        });
+        expect(result).toMatchObject({
+          itemState: 'IMPLEMENTING',
+          actionRequired: 'GREEN_TEST_EVIDENCE_INCOMPLETE',
+          pendingTestKeys: ['T-LEGACY-GREEN'],
+        });
+        await expect(ledger.transitionWorkItem({
+          projectKey: 'carara',
+          featureKey: 'E6',
+          itemKey: '01',
+          to: 'GREEN_CONFIRMED',
+          executionFence,
+        })).rejects.toMatchObject({
+          code: 'VALIDATION_EVIDENCE_INCOMPLETE',
+          details: { pendingTestKeys: ['T-LEGACY-GREEN'] },
+        });
+      } finally {
+        await client.testSpecification.deleteMany({
+          where: { workItemId: testItem.id, key: 'T-LEGACY-GREEN' },
+        });
+        await client.workItem.update({ where: { id: testItem.id }, data: { state: 'TESTS_DEFINED' } });
+      }
     });
 
     it('rejects a purpose that does not match the item state before invoking the runner', async () => {
@@ -456,7 +712,7 @@ describe('validation executor', () => {
         profileKey: 'bounded',
         purpose: 'RED',
       });
-      expect(failed.validation.resultKind).toBe('TEST_FAILURE');
+      expect(failed.validation.resultKind).toBe('INFRASTRUCTURE_ERROR');
       expect(gunzipSync(Buffer.from(failed.validation.logBlob as Uint8Array)).byteLength)
         .toBeLessThanOrEqual(1_024);
 
@@ -503,6 +759,109 @@ describe('validation executor', () => {
         profileKey: 'escape',
         purpose: 'RED',
       })).rejects.toMatchObject({ code: 'VALIDATION_CWD_INVALID' });
+    });
+  });
+
+  describe('structured test evidence', () => {
+    it('normalizes Jest and Playwright JSON reports into stable test selectors', () => {
+      const parse = (validationExecutorModule as unknown as Record<string, unknown>)
+        .parseStructuredTestReport as ((output: string, parser: string) => unknown[]) | undefined;
+      expect(typeof parse).toBe('function');
+      if (!parse) return;
+
+      const jestReport = `> npm test -- --json\n${JSON.stringify({
+        testResults: [{
+          name: 'src/checklist.spec.ts',
+          assertionResults: [{
+            ancestorTitles: ['Checklist'],
+            title: 'applies template',
+            fullName: 'Checklist applies template',
+            status: 'passed',
+          }],
+        }],
+      })}\nTest Suites: 1 passed, 1 total`;
+      expect(parse(jestReport, 'JEST_JSON')).toEqual([{
+        selector: 'src/checklist.spec.ts::Checklist applies template',
+        status: 'PASSED',
+      }]);
+
+      const playwrightReport = JSON.stringify({
+        suites: [{
+          title: 'checklist.spec.ts',
+          file: 'tests/checklist.spec.ts',
+          specs: [{
+            title: 'applies template',
+            tests: [{
+              projectName: 'chromium',
+              results: [{ status: 'passed' }],
+            }],
+          }],
+        }],
+      });
+      expect(parse(playwrightReport, 'PLAYWRIGHT_JSON')).toEqual([{
+        selector: 'tests/checklist.spec.ts::applies template::chromium',
+        status: 'PASSED',
+      }]);
+      expect(() => parse('{"testResults":[', 'JEST_JSON')).toThrow();
+    });
+
+    it('classifies RED only when a planned selector is among the failed tests', () => {
+      const classify = classifyRedEvidence as unknown as (
+        output: string,
+        parser: string,
+        plannedSelectors: string[],
+      ) => { redEvidenceKind?: string; testsTotal?: number };
+      const report = JSON.stringify({
+        testResults: [{
+          name: 'src/checklist.spec.ts',
+          assertionResults: [{
+            ancestorTitles: ['Checklist'],
+            title: 'required behavior',
+            fullName: 'Checklist required behavior',
+            status: 'failed',
+          }, {
+            ancestorTitles: ['Other'],
+            title: 'unrelated behavior',
+            fullName: 'Other unrelated behavior',
+            status: 'failed',
+          }],
+        }],
+      });
+
+      expect(classify(report, 'JEST_JSON', [
+        'src/checklist.spec.ts::Checklist required behavior',
+      ])).toMatchObject({ redEvidenceKind: 'BEHAVIORAL', testsTotal: 2 });
+      expect(classify(report, 'JEST_JSON', [
+        'src/checklist.spec.ts::Different required behavior',
+      ])).toMatchObject({ redEvidenceKind: 'STRUCTURAL', testsTotal: 2 });
+      expect(classify('database is unavailable', 'GENERIC', [
+        'src/checklist.spec.ts::Checklist required behavior',
+      ]).redEvidenceKind).toBe('STRUCTURAL');
+    });
+
+    it('reports missing and failed required selectors separately from passing tests', () => {
+      const assess = (validationExecutorModule as unknown as Record<string, unknown>)
+        .assessTestEvidence as (
+          planned: Array<{ key: string; selector: string }>,
+          observed: Array<{ selector: string; status: string }>,
+        ) => unknown;
+      expect(typeof assess).toBe('function');
+      if (!assess) return;
+
+      expect(assess([
+        { key: 'T-01', selector: 'src/checklist.spec.ts::required' },
+        { key: 'T-02', selector: 'src/checklist.spec.ts::also required' },
+      ], [
+        { selector: 'src/checklist.spec.ts::required', status: 'PASSED' },
+        { selector: 'src/checklist.spec.ts::also required', status: 'FAILED' },
+      ])).toEqual({ complete: false, missingKeys: [], failedKeys: ['T-02'] });
+
+      expect(assess([
+        { key: 'T-01', selector: 'src/checklist.spec.ts::required' },
+        { key: 'T-02', selector: 'src/checklist.spec.ts::also required' },
+      ], [
+        { selector: 'src/checklist.spec.ts::required', status: 'PASSED' },
+      ])).toEqual({ complete: false, missingKeys: ['T-02'], failedKeys: [] });
     });
   });
 });

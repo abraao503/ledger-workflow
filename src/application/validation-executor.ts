@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import type { PrismaClient } from '@prisma/client';
@@ -13,12 +14,14 @@ import type {
   CommandRunner,
   ExecuteValidationInput,
   GitReadPort,
+  ValidationParser,
 } from './types.js';
 import { WorkflowLedger } from './workflow-ledger.js';
 
-type ValidationParser = 'JEST' | 'GENERIC';
 type ValidationStatus = 'COMPLETED' | 'TIMED_OUT' | 'FAILED_TO_START';
 type ValidationResultKind = 'PASS' | 'TEST_FAILURE' | 'INFRASTRUCTURE_ERROR' | 'TIMEOUT';
+export type ObservedTestStatus = 'PASSED' | 'FAILED' | 'SKIPPED';
+export type ObservedTestResult = { selector: string; status: ObservedTestStatus };
 
 export type ValidationClassification = {
   status: ValidationStatus;
@@ -30,23 +33,34 @@ export type ValidationClassification = {
 export function classifyRedEvidence(
   output: string,
   parser: ValidationParser,
+  plannedSelectors: string[] = [],
+  repositoryRoot = process.cwd(),
 ): Pick<ValidationClassification, 'redEvidenceKind' | 'testsTotal'> {
-  if (parser !== 'JEST') {
-    return { redEvidenceKind: 'BEHAVIORAL' };
+  if (isStructuredParser(parser)) {
+    try {
+      const tests = parseStructuredTestReport(output, parser, repositoryRoot);
+      return {
+        redEvidenceKind: tests.some((test) => (
+          test.status === 'FAILED' && plannedSelectors.includes(test.selector)
+        )) ? 'BEHAVIORAL' : 'STRUCTURAL',
+        testsTotal: tests.length,
+      };
+    } catch {
+      return { redEvidenceKind: 'STRUCTURAL', testsTotal: 0 };
+    }
   }
 
-  const tests = output.match(/Tests:\s+.*?(\d+)\s+total/i);
-  const testsTotal = tests ? Number(tests[1]) : 0;
-
+  const tests = parser === 'JEST' ? output.match(/Tests:\s+.*?(\d+)\s+total/i) : null;
   return {
-    redEvidenceKind: testsTotal > 0 ? 'BEHAVIORAL' : 'STRUCTURAL',
-    testsTotal,
+    redEvidenceKind: 'STRUCTURAL',
+    testsTotal: tests ? Number(tests[1]) : 0,
   };
 }
 
 export function classifyCommandResult(
   result: CommandResult,
   parser: ValidationParser,
+  structuredReport?: ObservedTestResult[] | null,
 ): ValidationClassification {
   if (result.timedOut) {
     return { status: 'TIMED_OUT', resultKind: 'TIMEOUT' };
@@ -56,22 +70,267 @@ export function classifyCommandResult(
     return { status: 'FAILED_TO_START', resultKind: 'INFRASTRUCTURE_ERROR' };
   }
 
+  if (isStructuredParser(parser)) {
+    let report = structuredReport;
+    if (report === undefined) {
+      try {
+        report = parseStructuredTestReport(result.stdout, parser);
+      } catch {
+        report = null;
+      }
+    }
+    if (!report || report.length === 0) {
+      return { status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' };
+    }
+    if (report.some((test) => test.status === 'FAILED')) {
+      return { status: 'COMPLETED', resultKind: 'TEST_FAILURE' };
+    }
+    return result.exitCode === 0
+      ? { status: 'COMPLETED', resultKind: 'PASS' }
+      : { status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' };
+  }
+
   if (result.exitCode === 0) {
     return { status: 'COMPLETED', resultKind: 'PASS' };
   }
 
   const output = `${result.stdout}\n${result.stderr}`;
-  const hasJestTestReport = /(?:Test Suites|Tests):\s+.*(?:failed|passed|total)/i.test(output);
+  const hasJestTestReport = parser === 'JEST' && /(?:Test Suites|Tests):\s+.*(?:failed|passed|total)/i.test(output);
   const hasKnownJestStructuralFailure = parser === 'JEST' && (
     /No tests found/i.test(output) ||
     /Your test suite must contain at least one test/i.test(output)
   );
 
-  if (parser === 'GENERIC' || hasJestTestReport || hasKnownJestStructuralFailure) {
+  if (hasJestTestReport || hasKnownJestStructuralFailure) {
     return { status: 'COMPLETED', resultKind: 'TEST_FAILURE' };
   }
 
   return { status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' };
+}
+
+export function parseStructuredTestReport(
+  output: string,
+  parser: 'JEST_JSON' | 'PLAYWRIGHT_JSON',
+  repositoryRoot = process.cwd(),
+): ObservedTestResult[] {
+  const report: unknown = extractStructuredJson(
+    output,
+    parser === 'JEST_JSON' ? 'testResults' : 'suites',
+  );
+  if (parser === 'JEST_JSON') {
+    return parseJestReport(report, repositoryRoot);
+  }
+  return parsePlaywrightReport(report, repositoryRoot);
+}
+
+function extractStructuredJson(output: string, expectedRootKey: string): unknown {
+  for (let start = 0; start < output.length; start += 1) {
+    if (output[start] !== '{') continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let completedObject = false;
+    for (let end = start; end < output.length; end += 1) {
+      const character = output[end];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === '\\') {
+          escaped = true;
+        } else if (character === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          completedObject = true;
+          try {
+            const candidate: unknown = JSON.parse(output.slice(start, end + 1));
+            if (isRecord(candidate) && expectedRootKey in candidate) return candidate;
+          } catch {
+            // Allow process wrappers before the one complete report object.
+          }
+          start = end;
+          break;
+        }
+      }
+    }
+    if (!completedObject) break;
+  }
+  throw new Error('STRUCTURED_TEST_REPORT_INVALID');
+}
+
+export function assessTestEvidence(
+  planned: Array<{ key: string; selector?: string }>,
+  observed: ObservedTestResult[],
+): { complete: boolean; missingKeys: string[]; failedKeys: string[] } {
+  const results = new Map(observed.map((test) => [test.selector, test.status]));
+  const missingKeys: string[] = [];
+  const failedKeys: string[] = [];
+
+  for (const test of planned) {
+    if (!test.selector) {
+      missingKeys.push(test.key);
+      continue;
+    }
+    const status = results.get(test.selector);
+    if (status === 'FAILED') {
+      failedKeys.push(test.key);
+    } else if (status !== 'PASSED') {
+      missingKeys.push(test.key);
+    }
+  }
+
+  return {
+    complete: missingKeys.length === 0 && failedKeys.length === 0,
+    missingKeys,
+    failedKeys,
+  };
+}
+
+function parseJestReport(report: unknown, repositoryRoot: string): ObservedTestResult[] {
+  if (!isRecord(report) || !Array.isArray(report.testResults)) {
+    throw new Error('JEST_JSON_REPORT_INVALID');
+  }
+
+  const observed: ObservedTestResult[] = [];
+  for (const suite of report.testResults) {
+    if (!isRecord(suite) || typeof suite.name !== 'string' || !Array.isArray(suite.assertionResults)) {
+      throw new Error('JEST_JSON_SUITE_INVALID');
+    }
+    const file = normalizeReportFile(suite.name, repositoryRoot);
+    for (const assertion of suite.assertionResults) {
+      if (!isRecord(assertion) || typeof assertion.status !== 'string') {
+        throw new Error('JEST_JSON_ASSERTION_INVALID');
+      }
+      const fullName = typeof assertion.fullName === 'string' && assertion.fullName.trim()
+        ? assertion.fullName.trim()
+        : [
+            ...(Array.isArray(assertion.ancestorTitles)
+              ? assertion.ancestorTitles.filter((title): title is string => typeof title === 'string')
+              : []),
+            typeof assertion.title === 'string' ? assertion.title : '',
+          ].filter(Boolean).join(' ');
+      if (!fullName) {
+        throw new Error('JEST_JSON_ASSERTION_NAME_MISSING');
+      }
+      observed.push({
+        selector: `${file}::${fullName}`,
+        status: normalizeJestStatus(assertion.status),
+      });
+    }
+  }
+  return dedupeObservedTests(observed);
+}
+
+function parsePlaywrightReport(report: unknown, repositoryRoot: string): ObservedTestResult[] {
+  if (!isRecord(report) || !Array.isArray(report.suites)) {
+    throw new Error('PLAYWRIGHT_JSON_REPORT_INVALID');
+  }
+
+  const observed: ObservedTestResult[] = [];
+  const visit = (suite: Record<string, unknown>, inheritedFile?: string, titles: string[] = []) => {
+    const fileValue = typeof suite.file === 'string' ? suite.file : inheritedFile;
+    const file = fileValue ? normalizeReportFile(fileValue, repositoryRoot) : undefined;
+    const suiteTitle = typeof suite.title === 'string' ? suite.title.trim() : '';
+    const isFileTitle = file && suiteTitle === path.basename(file);
+    const nestedTitles = suiteTitle && !isFileTitle ? [...titles, suiteTitle] : titles;
+
+    if (suite.specs !== undefined && !Array.isArray(suite.specs)) {
+      throw new Error('PLAYWRIGHT_JSON_SPECS_INVALID');
+    }
+    for (const spec of (suite.specs ?? []) as unknown[]) {
+      if (!isRecord(spec) || typeof spec.title !== 'string' || !Array.isArray(spec.tests) || !file) {
+        throw new Error('PLAYWRIGHT_JSON_SPEC_INVALID');
+      }
+      const title = [...nestedTitles, spec.title.trim()].filter(Boolean).join(' ');
+      for (const test of spec.tests) {
+        if (!isRecord(test) || !Array.isArray(test.results)) {
+          throw new Error('PLAYWRIGHT_JSON_TEST_INVALID');
+        }
+        const project = typeof test.projectName === 'string' ? test.projectName.trim() : '';
+        const results = test.results.filter(isRecord);
+        const lastResult = results.at(-1);
+        const status = lastResult
+          ? normalizePlaywrightStatus(lastResult.status, test.expectedStatus)
+          : test.expectedStatus === 'skipped'
+            ? 'SKIPPED'
+            : 'SKIPPED';
+        observed.push({
+          selector: `${file}::${title}${project ? `::${project}` : ''}`,
+          status,
+        });
+      }
+    }
+
+    if (suite.suites !== undefined && !Array.isArray(suite.suites)) {
+      throw new Error('PLAYWRIGHT_JSON_SUITES_INVALID');
+    }
+    for (const child of (suite.suites ?? []) as unknown[]) {
+      if (!isRecord(child)) {
+        throw new Error('PLAYWRIGHT_JSON_SUITE_INVALID');
+      }
+      visit(child, fileValue, nestedTitles);
+    }
+  };
+
+  for (const suite of report.suites) {
+    if (!isRecord(suite)) {
+      throw new Error('PLAYWRIGHT_JSON_SUITE_INVALID');
+    }
+    visit(suite);
+  }
+  return dedupeObservedTests(observed);
+}
+
+function normalizeJestStatus(status: string): ObservedTestStatus {
+  if (status === 'passed') return 'PASSED';
+  if (status === 'failed') return 'FAILED';
+  if (['pending', 'todo', 'disabled'].includes(status)) return 'SKIPPED';
+  throw new Error('JEST_JSON_STATUS_INVALID');
+}
+
+function normalizePlaywrightStatus(status: unknown, expectedStatus: unknown): ObservedTestStatus {
+  if (status === expectedStatus && typeof expectedStatus === 'string') return 'PASSED';
+  if (status === 'passed') return 'PASSED';
+  if (status === 'skipped') return 'SKIPPED';
+  if (['failed', 'timedOut', 'interrupted'].includes(String(status))) return 'FAILED';
+  throw new Error('PLAYWRIGHT_JSON_STATUS_INVALID');
+}
+
+function normalizeReportFile(file: string, repositoryRoot: string): string {
+  const absolute = path.isAbsolute(file) ? path.normalize(file) : path.resolve(repositoryRoot, file);
+  const relative = path.relative(repositoryRoot, absolute);
+  return relative.split(path.sep).join('/');
+}
+
+function dedupeObservedTests(tests: ObservedTestResult[]): ObservedTestResult[] {
+  const bySelector = new Map<string, ObservedTestResult>();
+  for (const test of tests) {
+    const previous = bySelector.get(test.selector);
+    if (!previous || test.status === 'FAILED' || previous.status === 'SKIPPED') {
+      bySelector.set(test.selector, test);
+    }
+  }
+  return [...bySelector.values()];
+}
+
+function isStructuredParser(parser: ValidationParser): parser is 'JEST_JSON' | 'PLAYWRIGHT_JSON' {
+  return parser === 'JEST_JSON' || parser === 'PLAYWRIGHT_JSON';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableFingerprint(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 export class ValidationExecutor {
@@ -157,28 +416,76 @@ export class ValidationExecutor {
     }
 
     const snapshotBefore = await this.git.capture(repositoryPath);
-    const coveredTests = await this.db.testSpecification.findMany({
-      where: {
-        workItemId: currentItem.id,
-        purpose: input.purpose,
-        OR: [
-          { runnerProfileKey: null },
-          { runnerProfileKey: input.profileKey },
-        ],
+    const parser = currentProfile.parser as ValidationParser;
+    if (!['JEST', 'JEST_JSON', 'PLAYWRIGHT_JSON', 'GENERIC'].includes(parser)) {
+      fail('VALIDATION_PARSER_INVALID');
+    }
+    const testSpecifications = await this.db.testSpecification.findMany({
+      where: { workItemId: currentItem.id },
+      select: {
+        key: true,
+        name: true,
+        purpose: true,
+        runnerProfileKey: true,
+        testSelector: true,
+        criterion: { select: { key: true } },
       },
-      select: { key: true },
       orderBy: { key: 'asc' },
     });
+    const applicableTests = testSpecifications.filter((test) => (
+      test.runnerProfileKey === null || test.runnerProfileKey === input.profileKey
+    ));
+    const purposeTests = applicableTests.filter((test) => test.purpose === input.purpose);
+    const criteria = await this.db.acceptanceCriterion.findMany({
+      where: { workItemId: currentItem.id },
+      select: { key: true, statement: true, required: true, evidenceKind: true, polarity: true },
+      orderBy: { key: 'asc' },
+    });
+    const testPlanFingerprint = stableFingerprint({
+      riskTagsJson: currentItem.riskTagsJson,
+      scopeJson: currentItem.scopeJson,
+      criteria,
+      tests: testSpecifications.map((test) => ({
+        key: test.key,
+        name: test.name,
+        purpose: test.purpose,
+        runnerProfileKey: test.runnerProfileKey,
+        testSelector: test.testSelector,
+        criterionKey: test.criterion?.key ?? null,
+      })),
+    });
+    const profileFingerprint = stableFingerprint({
+      id: currentProfile.id,
+      key: currentProfile.key,
+      parser,
+      program: currentProfile.program,
+      args: decodeJson<string[]>(currentProfile.argsJson, []),
+      cwd: currentProfile.cwd,
+      timeoutSeconds: currentProfile.timeoutSeconds,
+      maxOutputBytes: currentProfile.maxOutputBytes,
+    });
+    const strictTestKeys = isStructuredParser(parser)
+      ? purposeTests.map((test) => test.key)
+      : [];
 
     if (input.purpose === 'CHECK') {
+      const requiresCompleteGreenTestEvidence = applicableTests.some((test) => test.purpose === 'GREEN');
       const reusableGreen = await this.findReusableGreen(
         currentItem.id,
         currentProfile.id,
         snapshotBefore.fingerprint,
         snapshotBefore.contentFingerprint,
+        testPlanFingerprint,
+        profileFingerprint,
+        requiresCompleteGreenTestEvidence,
+        strictTestKeys,
       );
 
       if (reusableGreen) {
+        const reusableSummary = decodeJson<{
+          coveredTestKeys?: string[];
+          coveredTestResults?: Array<{ key: string; selector: string; status: ObservedTestStatus }>;
+        }>(reusableGreen.summaryJson, {});
         const validation = await this.ledger.recordValidation({
           projectKey: input.projectKey,
           featureKey: input.featureKey,
@@ -201,7 +508,10 @@ export class ValidationExecutor {
               : {}),
             dirty: snapshotBefore.dirty,
             changedFileCount: snapshotBefore.changedFiles.length,
-            coveredTestKeys: coveredTests.map((test) => test.key),
+            testPlanFingerprint,
+            profileFingerprint,
+            coveredTestKeys: reusableSummary.coveredTestKeys ?? [],
+            coveredTestResults: reusableSummary.coveredTestResults ?? [],
             reusedFromValidationId: reusableGreen.id,
             reusedFromPurpose: 'GREEN',
           },
@@ -214,6 +524,7 @@ export class ValidationExecutor {
           reused: true,
           itemState: currentItem.state,
           pendingRepositoryKeys: undefined,
+          pendingTestKeys: undefined,
         };
       }
     }
@@ -229,16 +540,48 @@ export class ValidationExecutor {
     const startedAt = Date.now();
     const commandResult = await this.runner.run(request);
     const durationMs = Date.now() - startedAt;
-    const parser: ValidationParser = currentProfile.parser === 'JEST' ? 'JEST' : 'GENERIC';
+    let observedTests: ObservedTestResult[] | undefined;
+    let structuredReport: ObservedTestResult[] | null | undefined;
+    if (isStructuredParser(parser) && !commandResult.error && commandResult.exitCode !== null) {
+      try {
+        observedTests = parseStructuredTestReport(commandResult.stdout, parser, repositoryPath);
+        structuredReport = observedTests;
+      } catch {
+        structuredReport = null;
+      }
+    }
     const snapshotAfter = await this.git.capture(repositoryPath);
-    const baseClassification = classifyCommandResult(commandResult, parser);
+    const baseClassification = classifyCommandResult(commandResult, parser, structuredReport);
+    const observedBySelector = new Map((observedTests ?? []).map((test) => [test.selector, test]));
+    const coveredTestResults = applicableTests.flatMap((test) => {
+      if (!test.testSelector) return [];
+      const observed = observedBySelector.get(test.testSelector);
+      return observed
+        ? [{ key: test.key, selector: test.testSelector, status: observed.status }]
+        : [];
+    });
+    const coveredTestKeys = coveredTestResults.map((test) => test.key);
+    const requiresObservedTestEvidence = isStructuredParser(parser) || (
+      input.purpose === 'GREEN' && purposeTests.length > 0
+    );
+    const testEvidence = requiresObservedTestEvidence
+      ? assessTestEvidence(purposeTests.map((test) => ({
+          key: test.key,
+          selector: test.testSelector ?? undefined,
+        })), observedTests ?? [])
+      : { complete: true, missingKeys: [], failedKeys: [] };
     const worktreeChanged = snapshotBefore.fingerprint !== snapshotAfter.fingerprint;
     const classification: ValidationClassification = worktreeChanged
       ? { status: 'COMPLETED', resultKind: 'INFRASTRUCTURE_ERROR' }
       : {
           ...baseClassification,
           ...(input.purpose === 'RED' && baseClassification.resultKind === 'TEST_FAILURE'
-            ? classifyRedEvidence(`${commandResult.stdout}\n${commandResult.stderr}`, parser)
+            ? classifyRedEvidence(
+                isStructuredParser(parser) ? commandResult.stdout : `${commandResult.stdout}\n${commandResult.stderr}`,
+                parser,
+                purposeTests.flatMap((test) => test.testSelector ? [test.testSelector] : []),
+                repositoryPath,
+              )
             : {}),
         };
     const validation = await this.ledger.recordValidation({
@@ -272,7 +615,12 @@ export class ValidationExecutor {
           ? { contentFingerprint: snapshotAfter.contentFingerprint }
           : {}),
         worktreeChangedDuringValidation: worktreeChanged,
-        coveredTestKeys: coveredTests.map((test) => test.key),
+        testPlanFingerprint,
+        profileFingerprint,
+        observedTests,
+        testEvidence,
+        coveredTestKeys,
+        coveredTestResults,
         redEvidenceKind: classification.redEvidenceKind,
         testsTotal: classification.testsTotal,
       },
@@ -283,6 +631,14 @@ export class ValidationExecutor {
     let itemState = currentItem.state;
     let actionRequired: string | undefined;
     let pendingRepositoryKeys: string[] | undefined;
+    let pendingTestKeys: string[] | undefined;
+
+    if (requiresObservedTestEvidence && !testEvidence.complete) {
+      actionRequired = input.purpose === 'GREEN'
+        ? 'GREEN_TEST_EVIDENCE_INCOMPLETE'
+        : `${input.purpose}_TEST_EVIDENCE_INCOMPLETE`;
+      pendingTestKeys = [...testEvidence.missingKeys, ...testEvidence.failedKeys];
+    }
 
     if (input.purpose === 'RED' && classification.resultKind === 'TEST_FAILURE') {
       if (classification.redEvidenceKind === 'STRUCTURAL' && !input.reason?.trim()) {
@@ -300,7 +656,7 @@ export class ValidationExecutor {
       }
     }
 
-    if (input.purpose === 'GREEN' && classification.resultKind === 'PASS') {
+    if (input.purpose === 'GREEN' && classification.resultKind === 'PASS' && testEvidence.complete) {
       try {
         const updated = await this.ledger.transitionWorkItem({
           projectKey: input.projectKey,
@@ -312,14 +668,22 @@ export class ValidationExecutor {
         });
         itemState = updated.state;
       } catch (error) {
-        if (!(error instanceof WorkflowTransitionError) || error.code !== 'GREEN_EVIDENCE_INCOMPLETE') {
+        if (!(error instanceof WorkflowTransitionError) || ![
+          'GREEN_EVIDENCE_INCOMPLETE',
+          'VALIDATION_EVIDENCE_INCOMPLETE',
+        ].includes(error.code)) {
           throw error;
         }
 
-        actionRequired = 'GREEN_REPOSITORIES_PENDING';
+        actionRequired = Array.isArray(error.details?.pendingTestKeys)
+          ? 'GREEN_TEST_EVIDENCE_INCOMPLETE'
+          : 'GREEN_REPOSITORIES_PENDING';
         pendingRepositoryKeys = Array.isArray(error.details?.pendingRepositoryKeys)
           ? error.details.pendingRepositoryKeys.filter((key): key is string => typeof key === 'string')
           : undefined;
+        pendingTestKeys = Array.isArray(error.details?.pendingTestKeys)
+          ? error.details.pendingTestKeys.filter((key): key is string => typeof key === 'string')
+          : pendingTestKeys;
       }
     }
 
@@ -331,6 +695,7 @@ export class ValidationExecutor {
       itemState,
       actionRequired,
       pendingRepositoryKeys,
+      pendingTestKeys,
     };
   }
 
@@ -339,26 +704,62 @@ export class ValidationExecutor {
     profileId: string,
     fingerprint: string,
     contentFingerprint?: string,
+    testPlanFingerprint?: string,
+    profileFingerprint?: string,
+    requiresCompleteTestEvidence = false,
+    requiredTestKeys: string[] = [],
   ) {
-    const validations = await this.db.validationRun.findMany({
-      where: {
-        workItemId,
-        profileId,
-        purpose: 'GREEN',
-        resultKind: 'PASS',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const [allValidations, lastInvalidation] = await Promise.all([
+      this.db.validationRun.findMany({
+        where: {
+          workItemId,
+          profileId,
+          purpose: 'GREEN',
+          resultKind: 'PASS',
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      this.db.workflowEvent.findFirst({
+        where: { workItemId, type: 'GREEN_INVALIDATED' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    ]);
+    const invalidationPayload = lastInvalidation
+      ? decodeJson<{ invalidatedThroughValidationId?: string }>(lastInvalidation.payloadJson, {})
+      : {};
+    const boundaryIndex = invalidationPayload.invalidatedThroughValidationId
+      ? allValidations.findIndex((validation) => (
+          validation.id === invalidationPayload.invalidatedThroughValidationId
+        ))
+      : -1;
+    const validations = !lastInvalidation
+      ? allValidations
+      : boundaryIndex >= 0
+        ? allValidations.slice(0, boundaryIndex)
+        : allValidations.filter((validation) => validation.createdAt > lastInvalidation.createdAt);
 
     return validations.find((validation) => {
-      const summary = decodeJson<{ fingerprint?: string; contentFingerprint?: string }>(
+      const summary = decodeJson<{
+        fingerprint?: string;
+        contentFingerprint?: string;
+        testPlanFingerprint?: string;
+        profileFingerprint?: string;
+        testEvidence?: { complete?: boolean };
+        coveredTestResults?: Array<{ key: string; status: ObservedTestStatus }>;
+      }>(
         validation.summaryJson,
         {},
       );
 
-      return summary.contentFingerprint && contentFingerprint
+      const sameSnapshot = summary.contentFingerprint && contentFingerprint
         ? summary.contentFingerprint === contentFingerprint
         : summary.fingerprint === fingerprint;
+      const samePlan = !testPlanFingerprint || summary.testPlanFingerprint === testPlanFingerprint;
+      const sameProfile = !profileFingerprint || summary.profileFingerprint === profileFingerprint;
+      const results = new Map((summary.coveredTestResults ?? []).map((test) => [test.key, test.status]));
+      const requiredTestsCovered = requiredTestKeys.every((key) => results.get(key) === 'PASSED');
+      const testEvidenceComplete = !requiresCompleteTestEvidence || summary.testEvidence?.complete === true;
+      return sameSnapshot && samePlan && sameProfile && requiredTestsCovered && testEvidenceComplete;
     });
   }
 }

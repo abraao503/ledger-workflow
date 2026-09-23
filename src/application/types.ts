@@ -64,6 +64,9 @@ export const validationCapabilityValues = [
 ] as const;
 export type ValidationCapability = (typeof validationCapabilityValues)[number];
 
+export const validationParserValues = ['JEST', 'JEST_JSON', 'PLAYWRIGHT_JSON', 'GENERIC'] as const;
+export type ValidationParser = (typeof validationParserValues)[number];
+
 export type CreateProjectInput = {
   key: string;
   name: string;
@@ -146,7 +149,20 @@ export type TestSpecificationInput = {
   name: string;
   purpose: 'RED' | 'GREEN' | 'CHECK';
   runnerProfileKey?: string;
+  testSelector?: string;
   criterionKey?: string;
+};
+
+export type BindTestSelectorsInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  tests: Array<{
+    key: string;
+    testSelector: string;
+    runnerProfileKey: string;
+  }>;
+  executionFence?: number;
 };
 
 export type DefineWorkItemInput = {
@@ -231,7 +247,7 @@ export type CreateValidationProfileInput = {
   program: string;
   args: string[];
   cwd?: string;
-  parser: 'JEST' | 'GENERIC';
+  parser: ValidationParser;
   capabilities?: ValidationCapability[];
   timeoutSeconds?: number;
   maxOutputBytes?: number;

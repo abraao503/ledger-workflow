@@ -176,6 +176,7 @@ model TestSpecification {
   name          String
   purpose       String
   runnerProfileKey String?
+  testSelector  String?
   status        String               @default("PLANNED")
   createdAt     DateTime             @default(now())
   workItem      WorkItem             @relation(fields: [workItemId], references: [id], onDelete: Cascade)
