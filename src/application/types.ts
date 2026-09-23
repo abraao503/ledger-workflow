@@ -168,6 +168,14 @@ export type DefineWorkItemInput = {
   tests: TestSpecificationInput[];
 };
 
+export type AmendDraftValidationPlanInput = {
+  projectKey: string;
+  featureKey: string;
+  itemKey: string;
+  riskTags: RiskTag[];
+  tests: TestSpecificationInput[];
+};
+
 export type RepositoryBaselineInput = {
   repositoryKey: string;
   branch: string;

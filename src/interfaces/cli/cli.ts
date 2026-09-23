@@ -279,6 +279,24 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
     });
 
   item
+    .command('amend-validation-plan')
+    .description('Atualiza riscos e testes/perfis de validação enquanto a fatia está em DRAFT')
+    .requiredOption('--project <key>')
+    .requiredOption('--feature <key>')
+    .requiredOption('--item <key>')
+    .requiredOption('--risk-tags <json>')
+    .requiredOption('--tests <json>')
+    .action(async (options, command) => {
+      emit(command, await app.ledger.amendDraftValidationPlan({
+        projectKey: options.project,
+        featureKey: options.feature,
+        itemKey: options.item,
+        riskTags: parseJson(options.riskTags, 'risk-tags'),
+        tests: parseJson(options.tests, 'tests'),
+      }), stdout);
+    });
+
+  item
     .command('claim')
     .description('Reserva uma fatia autorizada para um agente por um período')
     .requiredOption('--project <key>')

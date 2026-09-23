@@ -30,6 +30,38 @@ describe('workflow CLI', () => {
     });
   });
 
+  it('routes validation-plan amendments with parsed risk tags and tests', async () => {
+    const calls: unknown[] = [];
+    const app = { ledger: { amendDraftValidationPlan: async (input: unknown) => {
+      calls.push(input);
+      return { key: '01', state: 'DRAFT' };
+    } } } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+    cli.commands.find((command) => command.name() === 'item')
+      ?.commands.find((command) => command.name() === 'amend-validation-plan')?.exitOverride();
+
+    await cli.parseAsync([
+      'node', 'workflow', 'item', 'amend-validation-plan',
+      '--project', 'carara', '--feature', 'E28', '--item', '01A',
+      '--risk-tags', '["API_WRITE"]',
+      '--tests', '[{"key":"T-01","name":"integra API","purpose":"GREEN","runnerProfileKey":"e28-api-checklist-tests","criterionKey":"AC-01"}]',
+    ]);
+
+    expect(calls).toEqual([{
+      projectKey: 'carara',
+      featureKey: 'E28',
+      itemKey: '01A',
+      riskTags: ['API_WRITE'],
+      tests: [{
+        key: 'T-01',
+        name: 'integra API',
+        purpose: 'GREEN',
+        runnerProfileKey: 'e28-api-checklist-tests',
+        criterionKey: 'AC-01',
+      }],
+    }]);
+  });
+
   it('passes structured arguments to the ledger and supports compact JSON output', async () => {
     const calls: unknown[] = [];
     const result = { id: 'project-1', key: 'carara' };

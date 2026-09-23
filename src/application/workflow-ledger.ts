@@ -48,6 +48,7 @@ import {
 } from './types.js';
 import type {
   AddRepositoryInput,
+  AmendDraftValidationPlanInput,
   ApproveSliceSizeInput,
   AuthorizeWorkItemInput,
   ClaimWorkItemInput,
@@ -767,6 +768,185 @@ export class WorkflowLedger {
       });
 
       return item;
+    });
+  }
+
+  async amendDraftValidationPlan(input: AmendDraftValidationPlanInput) {
+    const project = await this.requireProject(input.projectKey);
+    const feature = await this.requireFeature(input.projectKey, input.featureKey);
+    const riskTags = normalizeCatalogValues(
+      input.riskTags,
+      riskTagValues,
+      'RISK_TAG_INVALID',
+    );
+    const testKeys = new Set<string>();
+    for (const test of input.tests) {
+      if (!test.key.trim() || testKeys.has(test.key)) {
+        fail('DUPLICATE_TEST_KEY');
+      }
+      if (!['RED', 'GREEN', 'CHECK'].includes(test.purpose)) {
+        fail('TEST_PURPOSE_INVALID');
+      }
+      testKeys.add(test.key);
+    }
+
+    return this.db.$transaction(async (transaction) => {
+      await this.lockProjectForWrite(transaction, project.id);
+      const item = await transaction.workItem.findFirst({
+        where: { featureId: feature.id, key: input.itemKey },
+        include: {
+          feature: true,
+          useCases: { select: { key: true, trigger: true, expectedOutcome: true } },
+          criteria: {
+            include: { useCase: { select: { key: true } } },
+          },
+          tests: { select: { key: true, purpose: true, runnerProfileKey: true, criterion: { select: { key: true } } } },
+        },
+      });
+      if (!item) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      const currentItem = item as NonNullable<typeof item>;
+      if (currentItem.state !== 'DRAFT') {
+        fail('VALIDATION_PLAN_DRAFT_ONLY');
+      }
+
+      const scope = decodeWorkItemScope(currentItem.scopeJson);
+      if ((riskTags.length || input.tests.some((test) => test.runnerProfileKey)) && !scope) {
+        fail('WORK_ITEM_SCOPE_REQUIRED');
+      }
+      if (scope) {
+        const scopeIssues = validateWorkItemScope(scope);
+        if (scopeIssues.length) {
+          fail(scopeIssues[0].code);
+        }
+      }
+
+      const criteriaByKey = new Map(currentItem.criteria.map((criterion) => [criterion.key, criterion]));
+      for (const test of input.tests) {
+        if (test.criterionKey && !criteriaByKey.has(test.criterionKey)) {
+          fail('TEST_CRITERION_NOT_FOUND');
+        }
+      }
+
+      const repositoryKeys = scope?.repositories.map((repository) => repository.repositoryKey) ?? [];
+      const profiles = await transaction.validationProfile.findMany({
+        where: {
+          active: true,
+          repository: { projectId: project.id, key: { in: repositoryKeys } },
+        },
+        select: { key: true, capabilitiesJson: true },
+      });
+      const validationProfiles = profiles.map((profile) => ({
+        key: profile.key,
+        capabilities: decodeJson<string[]>(profile.capabilitiesJson, []),
+      }));
+
+      const isUiPatch = currentItem.feature.taskType === 'PATCH' && (
+        isFrontendUiScope(scope)
+        || riskTags.some((tag) => tag === 'FRONTEND' || tag === 'VISUAL_ONLY')
+      );
+      const uiCriteria = currentItem.criteria.filter((criterion) => (
+        criterion.required
+        && criterion.polarity !== 'FORBIDDEN'
+        && criterion.evidenceKind === 'UI'
+      ));
+      if (isUiPatch && !uiCriteria.length) {
+        fail('TASK_UI_CONTRACT_REQUIRED');
+      }
+
+      const semantic = currentItem.feature.taskType === 'PATCH'
+        && currentItem.useCases.length === 0
+        && !isUiPatch
+        ? { status: 'OK' as const, issues: [] }
+        : assessPlanSemantics({
+            useCases: currentItem.useCases,
+            criteria: currentItem.criteria.filter((criterion) => criterion.required).map((criterion) => ({
+              key: criterion.key,
+              useCaseKey: criterion.useCase?.key,
+              evidenceKind: criterion.evidenceKind,
+              polarity: criterion.polarity,
+            })),
+            tests: input.tests.map((test) => ({
+              key: test.key,
+              criterionKey: test.criterionKey,
+            })),
+            requiresTests: currentItem.kind === 'CODE' && currentItem.tddPolicy === 'REQUIRED',
+          });
+      if (semantic.status !== 'OK') {
+        fail('VALIDATION_PLAN_SEMANTICS_INVALID', 'O plano atualizado não atende à auditoria semântica.', {
+          issues: semantic.issues,
+        });
+      }
+
+      const validation = assessValidationCoverage({
+        riskTags,
+        tests: input.tests,
+        profiles: validationProfiles,
+      });
+      const hasLinkedUiTest = !isUiPatch || input.tests.some((test) => (
+        uiCriteria.some((criterion) => criterion.key === test.criterionKey)
+        && validationProfiles.some((profile) => (
+          profile.key === test.runnerProfileKey
+          && profile.capabilities.includes('UI_INTERACTION')
+        ))
+      ));
+      if (validation.status !== 'OK' || !hasLinkedUiTest) {
+        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis ativos que cubram os riscos e critérios UI.', {
+          missingCapabilities: validation.missingCapabilities,
+          missingProfileKeys: validation.missingProfileKeys,
+        });
+      }
+
+      const updateResult = await transaction.workItem.updateMany({
+        where: { id: currentItem.id, state: 'DRAFT' },
+        data: { riskTagsJson: encodeJson(riskTags) },
+      });
+      if (updateResult.count !== 1) {
+        fail('WORK_ITEM_STATE_CHANGED_CONCURRENTLY');
+      }
+
+      await transaction.testSpecification.deleteMany({ where: { workItemId: currentItem.id } });
+      for (const test of input.tests) {
+        await transaction.testSpecification.create({
+          data: {
+            workItemId: currentItem.id,
+            criterionId: test.criterionKey ? criteriaByKey.get(test.criterionKey)?.id : undefined,
+            key: test.key,
+            name: test.name,
+            purpose: test.purpose,
+            runnerProfileKey: test.runnerProfileKey,
+          },
+        });
+      }
+
+      const updated = await transaction.workItem.findUnique({
+        where: { id: currentItem.id },
+        include: { tests: true },
+      });
+      if (!updated) {
+        fail('WORK_ITEM_NOT_FOUND');
+      }
+      await transaction.workflowEvent.create({
+        data: {
+          projectId: project.id,
+          featureId: feature.id,
+          workItemId: currentItem.id,
+          type: 'DRAFT_VALIDATION_PLAN_AMENDED',
+          payloadJson: encodeJson({
+            previousRiskTags: decodeJson<string[]>(currentItem.riskTagsJson, []),
+            riskTags,
+            previousTests: currentItem.tests.map((test) => ({
+              key: test.key,
+              purpose: test.purpose,
+              runnerProfileKey: test.runnerProfileKey,
+              criterionKey: test.criterion?.key,
+            })),
+            tests: input.tests,
+          }),
+        },
+      });
+      return updated;
     });
   }
 

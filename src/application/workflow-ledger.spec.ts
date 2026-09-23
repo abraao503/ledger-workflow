@@ -487,4 +487,133 @@ describe('WorkflowLedger', () => {
       state: 'CLOSED',
     });
   });
+
+  it('amends validation risks and test profiles only for a valid DRAFT plan', async () => {
+    await ledger.createProject({
+      key: 'draft-validation-plan',
+      name: 'Draft validation plan',
+      rootPath: '/tmp/draft-validation-plan',
+    });
+    await ledger.addRepository({
+      projectKey: 'draft-validation-plan',
+      key: 'api',
+      path: '/tmp/draft-validation-plan/api',
+      expectedBranch: 'main',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'draft-validation-plan',
+      repositoryKey: 'api',
+      key: 'api-incomplete',
+      program: 'npm',
+      args: ['test'],
+      parser: 'JEST',
+    });
+    await ledger.createValidationProfile({
+      projectKey: 'draft-validation-plan',
+      repositoryKey: 'api',
+      key: 'api-complete',
+      program: 'npm',
+      args: ['test'],
+      parser: 'JEST',
+      capabilities: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
+    });
+    await ledger.createTemplate({
+      projectKey: 'draft-validation-plan',
+      key: 'gates',
+      name: 'Gates',
+      definition: { phases: ['G3'] },
+    });
+    await ledger.createFeature({
+      projectKey: 'draft-validation-plan',
+      templateKey: 'gates',
+      key: 'E1',
+      name: 'Validation plan amendment',
+      summary: 'Correct draft validation coverage',
+    });
+    const item = await ledger.defineWorkItem({
+      projectKey: 'draft-validation-plan',
+      featureKey: 'E1',
+      key: '01',
+      phaseKey: 'G3',
+      position: 1,
+      title: 'Draft item',
+      summary: 'Item for validation-plan amendment',
+      scope: { repositories: [{ repositoryKey: 'api', paths: ['src/**'] }] },
+      useCases: [{
+        key: 'UC-01',
+        title: 'Run the API behavior',
+        actor: 'operator',
+        preconditions: 'A draft item exists',
+        trigger: 'The plan is amended',
+        expectedOutcome: 'The plan keeps valid test coverage',
+      }],
+      criteria: [{
+        key: 'AC-01',
+        statement: 'The required API behavior is tested',
+        useCaseKey: 'UC-01',
+        evidenceKind: 'HTTP_RESPONSE',
+      }],
+      tests: [{
+        key: 'T-OLD',
+        name: 'old profile',
+        purpose: 'GREEN',
+        runnerProfileKey: 'api-incomplete',
+        criterionKey: 'AC-01',
+      }],
+    });
+
+    await expect(ledger.amendDraftValidationPlan({
+      projectKey: 'draft-validation-plan',
+      featureKey: 'E1',
+      itemKey: '01',
+      riskTags: ['API_WRITE'],
+      tests: [{
+        key: 'T-NEW',
+        name: 'incomplete profile',
+        purpose: 'GREEN',
+        runnerProfileKey: 'api-incomplete',
+        criterionKey: 'AC-01',
+      }],
+    })).rejects.toMatchObject({ code: 'VALIDATION_PLAN_INCOMPLETE' });
+    expect(await client.workItem.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({
+      riskTagsJson: '[]',
+    });
+    expect(await client.testSpecification.findMany({ where: { workItemId: item.id } }))
+      .toMatchObject([{ key: 'T-OLD', runnerProfileKey: 'api-incomplete' }]);
+
+    const amended = await ledger.amendDraftValidationPlan({
+      projectKey: 'draft-validation-plan',
+      featureKey: 'E1',
+      itemKey: '01',
+      riskTags: ['API_WRITE'],
+      tests: [{
+        key: 'T-NEW',
+        name: 'covered profile',
+        purpose: 'GREEN',
+        runnerProfileKey: 'api-complete',
+        criterionKey: 'AC-01',
+      }],
+    });
+    expect(amended).toMatchObject({
+      riskTagsJson: '["API_WRITE"]',
+      tests: [{ key: 'T-NEW', runnerProfileKey: 'api-complete' }],
+    });
+    expect(await client.workflowEvent.findFirst({
+      where: { workItemId: item.id, type: 'DRAFT_VALIDATION_PLAN_AMENDED' },
+    })).not.toBeNull();
+
+    await client.workItem.update({ where: { id: item.id }, data: { state: 'READY' } });
+    await expect(ledger.amendDraftValidationPlan({
+      projectKey: 'draft-validation-plan',
+      featureKey: 'E1',
+      itemKey: '01',
+      riskTags: [],
+      tests: [{ key: 'T-LATE', name: 'late change', purpose: 'GREEN' }],
+    })).rejects.toMatchObject({ code: 'VALIDATION_PLAN_DRAFT_ONLY' });
+    expect(await client.workItem.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({
+      riskTagsJson: '["API_WRITE"]',
+    });
+    expect(await client.testSpecification.findMany({ where: { workItemId: item.id } }))
+      .toMatchObject([{ key: 'T-NEW', runnerProfileKey: 'api-complete' }]);
+  });
 });
