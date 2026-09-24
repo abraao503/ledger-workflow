@@ -8,6 +8,13 @@ import { createMcpServer } from './server.js';
 describe('workflow MCP server', () => {
   it('exposes the short context through the MCP protocol', async () => {
     const app = {
+      quickChanges: {
+        start: async (input: unknown) => ({ status: 'OPEN', input }),
+        finish: async (input: unknown) => ({ status: 'CLOSED', input }),
+        promote: async (input: unknown) => ({ status: 'PROMOTED', input }),
+        cancel: async (input: unknown) => ({ status: 'CANCELLED', input }),
+        list: async (input: unknown) => ({ quickChanges: [], input }),
+      },
       ledger: {
         listProjects: async () => ({ projects: [{ key: 'carara', name: 'Carará', status: 'ACTIVE' }] }),
         listFeatures: async (input: string | { projectKey: string }) => ({
@@ -86,12 +93,17 @@ describe('workflow MCP server', () => {
       'workflow_list_features',
       'workflow_list_pending',
       'workflow_list_projects',
+      'workflow_list_quick_changes',
       'workflow_list_repositories',
       'workflow_list_validations',
       'workflow_pending_record',
       'workflow_pending_resolve',
       'workflow_plan_check',
       'workflow_prepare_integration',
+      'workflow_quick_cancel',
+      'workflow_quick_finish',
+      'workflow_quick_promote',
+      'workflow_quick_start',
       'workflow_ready_frontier',
       'workflow_record',
       'workflow_reconcile_item_leases',
@@ -148,6 +160,20 @@ describe('workflow MCP server', () => {
         text: expect.stringContaining('"taskType":"PATCH"'),
       },
     ]);
+    const quickResult = await client.callTool({
+      name: 'workflow_quick_start',
+      arguments: {
+        projectKey: 'carara', key: 'Q-01', title: 'Ajustar card',
+        summary: 'Reutilizar a permissão existente no card.',
+        requestedBy: 'human:owner', eligibilityReason: 'Mudança local e reversível.',
+        repositoryKey: 'front', paths: ['src/components/Card.tsx'],
+        riskTags: ['ROLE_VISIBILITY'], guardReference: 'canManageWorkspace',
+      },
+    });
+    expect(quickResult.isError).not.toBe(true);
+    expect(quickResult.content).toEqual([{
+      type: 'text', text: expect.stringContaining('"status":"OPEN"'),
+    }]);
     const visualTaskResult = await client.callTool({
       name: 'workflow_create_task',
       arguments: {

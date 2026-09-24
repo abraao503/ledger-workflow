@@ -23,6 +23,7 @@ model Project {
   pendingItems PendingItem[]
   events       WorkflowEvent[]
   summaries    HistorySummary[]
+  quickChanges QuickChange[]
 }
 
 model Repository {
@@ -37,7 +38,41 @@ model Repository {
   validationProfiles ValidationProfile[]
   snapshots        RepositorySnapshot[]
   workspaces        WorkItemWorkspace[]
+  quickChanges      QuickChange[]
   @@unique([projectId, key])
+}
+
+model QuickChange {
+  id                  String     @id @default(cuid())
+  projectId           String
+  repositoryId        String
+  key                 String
+  title               String
+  summary             String
+  status              String     @default("OPEN")
+  requestedBy         String
+  completedBy         String?
+  eligibilityReason   String
+  guardReference      String?
+  scopeJson           String
+  riskTagsJson        String     @default("[]")
+  baseBranch          String
+  baseSha             String
+  baseFingerprint     String
+  commitSha           String?
+  changedFilesJson    String     @default("[]")
+  verificationKind    String?
+  verificationSummary String?
+  promotedTaskKey     String?
+  promotionReason     String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  closedAt            DateTime?
+  project             Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  repository          Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  @@unique([projectId, key])
+  @@index([projectId, status, createdAt])
+  @@index([repositoryId, status])
 }
 
 model WorkflowTemplateVersion {

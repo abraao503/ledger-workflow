@@ -29,8 +29,16 @@ export const riskTagValues = [
   'ASYNC_JOB',
   'EXTERNAL_INTEGRATION',
   'VISUAL_ONLY',
+  'AUTHORIZATION',
+  'ROLE_VISIBILITY',
 ] as const;
 export type RiskTag = (typeof riskTagValues)[number];
+
+export const quickChangeStatuses = ['OPEN', 'CLOSED', 'PROMOTED', 'CANCELLED'] as const;
+export type QuickChangeStatus = (typeof quickChangeStatuses)[number];
+
+export const quickVerificationKinds = ['DIFF', 'COMMAND', 'MANUAL'] as const;
+export type QuickVerificationKind = (typeof quickVerificationKinds)[number];
 
 export const evidenceKindValues = [
   'GENERAL',
@@ -123,6 +131,48 @@ export type CreateTaskInput = {
   useCases?: UseCaseInput[];
   criteria?: AcceptanceCriterionInput[];
   tests?: TestSpecificationInput[];
+};
+
+export type StartQuickChangeInput = {
+  projectKey: string;
+  key: string;
+  title: string;
+  summary: string;
+  requestedBy: string;
+  eligibilityReason: string;
+  repositoryKey: string;
+  paths: string[];
+  riskTags?: RiskTag[];
+  guardReference?: string;
+};
+
+export type FinishQuickChangeInput = {
+  projectKey: string;
+  key: string;
+  completedBy: string;
+  verificationKind: QuickVerificationKind;
+  verificationSummary: string;
+};
+
+export type PromoteQuickChangeInput = {
+  projectKey: string;
+  key: string;
+  patchKey: string;
+  actor: string;
+  reason: string;
+};
+
+export type CancelQuickChangeInput = {
+  projectKey: string;
+  key: string;
+  actor: string;
+  reason: string;
+};
+
+export type ListQuickChangesInput = {
+  projectKey: string;
+  key?: string;
+  status?: QuickChangeStatus | 'ALL';
 };
 
 export type UseCaseInput = {
@@ -749,6 +799,13 @@ export type DashboardCatalogProject = {
   name: string;
   status: string;
   features: DashboardCatalogFeature[];
+  quickChanges?: Array<{
+    key: string;
+    title: string;
+    status: QuickChangeStatus;
+    repositoryKey: string;
+    createdAt: string;
+  }>;
 };
 
 export type DashboardActionId =

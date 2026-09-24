@@ -6,6 +6,7 @@ import { WorkflowImporter } from './workflow-importer.js';
 import { WorkflowLedger } from './workflow-ledger.js';
 import { DashboardService } from './dashboard.js';
 import { ExecutionMapService } from './execution-map.js';
+import { QuickChangeService } from './quick-changes.js';
 import { prisma } from '../infrastructure/db/client.js';
 
 export type WorkflowApp = {
@@ -16,6 +17,7 @@ export type WorkflowApp = {
   importer: WorkflowImporter;
   dashboard: DashboardService;
   executionMap: ExecutionMapService;
+  quickChanges: QuickChangeService;
 };
 
 export function createWorkflowApp(db: PrismaClient = prisma): WorkflowApp {
@@ -32,5 +34,6 @@ export function createWorkflowApp(db: PrismaClient = prisma): WorkflowApp {
     importer: new WorkflowImporter(db),
     dashboard: new DashboardService(db, ledger),
     executionMap: new ExecutionMapService(db),
+    quickChanges: new QuickChangeService(db, git),
   };
 }

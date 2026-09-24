@@ -229,4 +229,36 @@ describe('task types', () => {
     });
     expect(patch.item).toMatchObject({ state: 'READY', tddPolicy: 'EXEMPT' });
   });
+
+  it('requires FEATURE when a PATCH exceeds the point-task size policy', async () => {
+    await expect(ledger.createPointTask({
+      projectKey: 'tasks', key: 'P8', title: 'Mudança ampla',
+      summary: 'Tenta agrupar resultados demais em um PATCH.',
+      scope: {
+        repositories: [
+          { repositoryKey: 'app', paths: ['src/service.ts'] },
+          { repositoryKey: 'front', paths: ['docs/README.md'] },
+        ],
+      },
+      useCases: [
+        {
+          key: 'UC-01', title: 'Resultado A', actor: 'operador', preconditions: 'pronto',
+          trigger: 'executa A', expectedOutcome: 'Resultado amplo concluído',
+        },
+        {
+          key: 'UC-02', title: 'Resultado B', actor: 'gestor', preconditions: 'pronto',
+          trigger: 'executa B', expectedOutcome: 'Resultado amplo concluído',
+        },
+        {
+          key: 'UC-03', title: 'Resultado C', actor: 'admin', preconditions: 'pronto',
+          trigger: 'executa C', expectedOutcome: 'Resultado amplo concluído',
+        },
+      ],
+      criteria: [
+        { key: 'AC-01', statement: 'A correto', useCaseKey: 'UC-01', evidenceKind: 'GENERAL' },
+        { key: 'AC-02', statement: 'B correto', useCaseKey: 'UC-02', evidenceKind: 'GENERAL' },
+        { key: 'AC-03', statement: 'C correto', useCaseKey: 'UC-03', evidenceKind: 'GENERAL' },
+      ],
+    })).rejects.toMatchObject({ code: 'PATCH_REQUIRES_FEATURE' });
+  });
 });

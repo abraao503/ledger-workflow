@@ -60,6 +60,16 @@ export class DashboardService {
           },
           },
         },
+        quickChanges: {
+          orderBy: [{ createdAt: 'desc' as const }, { key: 'asc' as const }],
+          select: {
+            key: true,
+            title: true,
+            status: true,
+            createdAt: true,
+            repository: { select: { key: true } },
+          },
+        },
       },
     });
 
@@ -67,6 +77,13 @@ export class DashboardService {
       key: project.key,
       name: project.name,
       status: project.status,
+      quickChanges: project.quickChanges.map((change) => ({
+        key: change.key,
+        title: change.title,
+        status: change.status as 'OPEN' | 'CLOSED' | 'PROMOTED' | 'CANCELLED',
+        repositoryKey: change.repository.key,
+        createdAt: change.createdAt.toISOString(),
+      })),
       features: project.features.map((feature) => ({
         key: feature.key,
         name: feature.name,

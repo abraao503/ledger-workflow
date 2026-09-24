@@ -3,6 +3,33 @@ import { WorkflowApplicationError } from '../../application/errors.js';
 import { createCli } from './cli.js';
 
 describe('workflow CLI', () => {
+  it('routes a quick change start without creating a task', async () => {
+    const calls: unknown[] = [];
+    const app = { quickChanges: { start: async (input: unknown) => {
+      calls.push(input);
+      return { key: 'Q-01', status: 'OPEN' };
+    } } } as unknown as WorkflowApp;
+    const cli = createCli({ app, stdout: { write: () => true } });
+    cli.commands.find((command) => command.name() === 'quick')
+      ?.commands.find((command) => command.name() === 'start')?.exitOverride();
+
+    await cli.parseAsync([
+      'node', 'workflow', 'quick', 'start', '--project', 'carara', '--key', 'Q-01',
+      '--title', 'Ajustar card', '--summary', 'Mostrar somente para gestores',
+      '--requested-by', 'human:owner', '--reason', 'Mudança local e reversível',
+      '--repository', 'front', '--paths', '["src/components/Card.tsx"]',
+      '--risk-tags', '["ROLE_VISIBILITY"]', '--guard', 'canManageWorkspace',
+    ]);
+
+    expect(calls).toEqual([{
+      projectKey: 'carara', key: 'Q-01', title: 'Ajustar card',
+      summary: 'Mostrar somente para gestores', requestedBy: 'human:owner',
+      eligibilityReason: 'Mudança local e reversível', repositoryKey: 'front',
+      paths: ['src/components/Card.tsx'], riskTags: ['ROLE_VISIBILITY'],
+      guardReference: 'canManageWorkspace',
+    }]);
+  });
+
   it('passes a visual PATCH contract to the ledger', async () => {
     const calls: unknown[] = [];
     const app = { ledger: { createTask: async (input: unknown) => {

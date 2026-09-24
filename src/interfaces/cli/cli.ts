@@ -210,6 +210,101 @@ export function createCli({ app, stdout = process.stdout }: CliDependencies): Co
       }), stdout);
     });
 
+  const quick = program.command('quick').description('Registra ajustes rápidos fora do ciclo de fatias');
+  quick
+    .command('start')
+    .description('Autoriza e abre um ajuste rápido com baseline Git limpo')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--title <title>')
+    .requiredOption('--summary <summary>')
+    .requiredOption('--requested-by <actor>', 'ator humano no formato human:<identidade>')
+    .requiredOption('--reason <reason>', 'por que a mudança é local, reversível e diretamente verificável')
+    .requiredOption('--repository <key>')
+    .requiredOption('--paths <json>', 'lista JSON de paths relativos; máximo de cinco')
+    .option('--risk-tags <json>', 'tags de risco permitidas no caminho rápido')
+    .option('--guard <reference>', 'permissão existente reutilizada em mudanças ROLE_VISIBILITY')
+    .action(async (options, command) => {
+      emit(command, await app.quickChanges.start({
+        projectKey: options.project,
+        key: options.key,
+        title: options.title,
+        summary: options.summary,
+        requestedBy: options.requestedBy,
+        eligibilityReason: options.reason,
+        repositoryKey: options.repository,
+        paths: parseJson(options.paths, 'paths'),
+        riskTags: options.riskTags ? parseJson(options.riskTags, 'risk-tags') : undefined,
+        guardReference: options.guard,
+      }), stdout);
+    });
+
+  quick
+    .command('finish')
+    .description('Fecha o ajuste rápido no commit atual após verificar o diff e o escopo')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--completed-by <actor>')
+    .requiredOption('--verification-kind <kind>', 'DIFF|COMMAND|MANUAL')
+    .requiredOption('--verification <summary>')
+    .action(async (options, command) => {
+      emit(command, await app.quickChanges.finish({
+        projectKey: options.project,
+        key: options.key,
+        completedBy: options.completedBy,
+        verificationKind: options.verificationKind,
+        verificationSummary: options.verification,
+      }), stdout);
+    });
+
+  quick
+    .command('promote')
+    .description('Encerra o ajuste rápido e o vincula a um PATCH governado já criado')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--patch <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.quickChanges.promote({
+        projectKey: options.project,
+        key: options.key,
+        patchKey: options.patch,
+        actor: options.actor,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  quick
+    .command('cancel')
+    .description('Cancela um ajuste rápido aberto e libera seu escopo')
+    .requiredOption('--project <key>')
+    .requiredOption('--key <key>')
+    .requiredOption('--actor <actor>')
+    .requiredOption('--reason <reason>')
+    .action(async (options, command) => {
+      emit(command, await app.quickChanges.cancel({
+        projectKey: options.project,
+        key: options.key,
+        actor: options.actor,
+        reason: options.reason,
+      }), stdout);
+    });
+
+  quick
+    .command('list')
+    .description('Lista ajustes rápidos; por padrão mostra somente os abertos')
+    .requiredOption('--project <key>')
+    .option('--key <key>')
+    .option('--status <status>', 'OPEN|CLOSED|PROMOTED|CANCELLED|ALL', 'OPEN')
+    .action(async (options, command) => {
+      emit(command, await app.quickChanges.list({
+        projectKey: options.project,
+        key: options.key,
+        status: options.status,
+      }), stdout);
+    });
+
   program
     .command('frontier')
     .description('Mostra a fronteira de trabalho acionável e o próximo comando de cada folha')

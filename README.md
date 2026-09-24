@@ -76,7 +76,17 @@ features identifica duas fatias diferentes.
 Fases ou gates, como `G3` e `G6`, marcam momentos do ciclo. Eles não são
 features, fatias nem estados.
 
-### Tipos de tarefa
+### Ajustes rápidos e tipos de tarefa
+
+O ledger também registra `QUICK_CHANGE`: uma mudança local, reversível e
+diretamente verificável que não precisa ser representada como uma feature ou
+fatia completa. Seu histórico preserva o pedido, o escopo, o baseline, a
+verificação e o commit, mas não percorre o ciclo governado de planejamento,
+testes e revisão.
+
+Mudanças com impacto em contratos, dados, autorização, tenancy, integrações ou
+coordenação entre várias entregas continuam sendo tratadas como tarefas
+governadas.
 
 O ledger aceita dois tipos de tarefa:
 

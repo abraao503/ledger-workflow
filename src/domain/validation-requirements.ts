@@ -10,6 +10,8 @@ const riskCapabilityMatrix: Record<string, readonly string[]> = {
   ASYNC_JOB: ['ASYNC_CONSISTENCY'],
   EXTERNAL_INTEGRATION: ['EXTERNAL_CONTRACT'],
   VISUAL_ONLY: [],
+  AUTHORIZATION: ['SECURITY_NEGATIVE'],
+  ROLE_VISIBILITY: ['UI_INTERACTION'],
 };
 
 export type ValidationRequirementAssessment = {

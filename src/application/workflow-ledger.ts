@@ -34,6 +34,7 @@ import {
   validateWorkItemScope,
 } from '../domain/work-item-scope.js';
 import { assessPlanSemantics } from '../domain/planning-semantics.js';
+import { independentReviewRisks } from '../domain/review-policy.js';
 import {
   assessValidationCoverage,
   deriveValidationRequirements,
@@ -350,6 +351,24 @@ export class WorkflowLedger {
           missingProfileKeys: validation.missingProfileKeys,
         });
       }
+    }
+
+    const patchSize = assessSliceSize({
+      useCases: useCases.length,
+      requiredCriteria: criteria.filter((criterion) => criterion.required !== false).length,
+      tests: tests.length,
+      repositories: input.scope?.repositories.length ?? 0,
+    });
+    if (patchSize.status !== 'OK') {
+      fail(
+        'PATCH_REQUIRES_FEATURE',
+        'A mudança excede o limite de uma entrega pontual e deve ser planejada como FEATURE.',
+        {
+          status: patchSize.status,
+          metrics: patchSize.metrics,
+          violations: patchSize.violations,
+        },
+      );
     }
 
     return this.db.$transaction(async (transaction) => {
@@ -3121,6 +3140,19 @@ export class WorkflowLedger {
     }
 
     const reviewMode = input.reviewMode ?? 'SELF';
+    const riskTags = decodeJson<string[]>(item.riskTagsJson, []);
+    const sensitiveReviewRisks = independentReviewRisks(riskTags);
+    if (
+      input.verdict === 'APPROVED'
+      && sensitiveReviewRisks.length > 0
+      && reviewMode !== 'INDEPENDENT'
+    ) {
+      fail(
+        'INDEPENDENT_REVIEW_REQUIRED',
+        'Mudanças sensíveis exigem revisão INDEPENDENT antes da aprovação.',
+        { riskTags: sensitiveReviewRisks },
+      );
+    }
     const targetState: WorkItemState = input.verdict === 'APPROVED'
       ? 'APPROVED'
       : input.verdict === 'CHANGES_REQUIRED'
@@ -5224,11 +5256,35 @@ export class WorkflowLedger {
       },
       include: { repository: true },
     });
-    const strictTests = tests;
-    if (!strictTests.length) {
-      return { complete: true, pendingTestKeys: [] };
+    const legacyGreenValidations = await this.db.validationRun.findMany({
+      where: {
+        workItemId: item.id,
+        purpose: 'GREEN',
+        resultKind: 'PASS',
+      },
+      include: { profile: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    const legacyPendingTestKeys = new Set<string>();
+    for (const validation of legacyGreenValidations) {
+      if (validation.profile.parser === 'JEST_JSON' || validation.profile.parser === 'PLAYWRIGHT_JSON') {
+        continue;
+      }
+      const summary = decodeJson<{ testEvidence?: { complete?: boolean; missingKeys?: string[] } }>(
+        validation.summaryJson,
+        {},
+      );
+      if (summary.testEvidence?.complete === false) {
+        for (const test of tests) {
+          if (test.purpose === 'GREEN' && test.runnerProfileKey === validation.profile.key) {
+            legacyPendingTestKeys.add(test.key);
+          }
+        }
+      }
     }
-
+    if (legacyPendingTestKeys.size) {
+      return { complete: false, pendingTestKeys: [...legacyPendingTestKeys] };
+    }
     const criteria = await this.db.acceptanceCriterion.findMany({
       where: { workItemId: item.id },
       select: { key: true, statement: true, required: true, evidenceKind: true, polarity: true },
@@ -5255,6 +5311,12 @@ export class WorkflowLedger {
     const structuredProfiles = profiles.filter((profile) => (
       profile.parser === 'JEST_JSON' || profile.parser === 'PLAYWRIGHT_JSON'
     ));
+    const strictTests = tests.filter((test) => (
+      structuredProfiles.some((profile) => profile.key === test.runnerProfileKey)
+    ));
+    if (!strictTests.length) {
+      return { complete: true, pendingTestKeys: [] };
+    }
     const profileFingerprints = new Map(structuredProfiles.map((profile) => [profile.id, createHash('sha256')
       .update(JSON.stringify({
         id: profile.id,

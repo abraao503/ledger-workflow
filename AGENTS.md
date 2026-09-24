@@ -65,8 +65,19 @@ altere o SQLite com outro programa.
    rtk git status --short
    ```
 
-2. Descubra o catálogo real. Não hardcode features como `E6`, `E7`, `E8` ou
-   `E9`:
+2. Classifique o pedido como `QUICK_CHANGE`, `PATCH` ou `FEATURE` usando a
+   seção [Classificação](#classificação-quick_change-patch-ou-feature) abaixo.
+   Essa decisão vem antes de escolher feature ou fatia:
+
+   - Para `QUICK_CHANGE`, não consulte `frontier`, `feature list`, `context`,
+     `item record` ou `validate list`. Use o caminho rápido documentado na
+     classificação; o `quick start` valida o repositório, o baseline e o
+     escopo.
+   - Para `PATCH` ou `FEATURE`, continue pelas etapas seguintes e consulte o
+     catálogo do ledger.
+
+3. Para `PATCH` ou `FEATURE`, descubra o catálogo real. Não hardcode features
+   como `E6`, `E7`, `E8` ou `E9`:
 
    ```bash
    rtk node dist/interfaces/cli/main.js project list
@@ -78,7 +89,7 @@ altere o SQLite com outro programa.
    descobrir chaves, estados e contagens, não para carregar todos os critérios
    e testes. A fronteira mostra somente folhas efetivas e ações pendentes.
 
-3. Escolha explicitamente uma feature e uma fatia e leia o contexto:
+4. Escolha explicitamente uma feature e uma fatia e leia o contexto:
 
    ```bash
    rtk node dist/interfaces/cli/main.js context \
@@ -93,18 +104,24 @@ altere o SQLite com outro programa.
    As regras de seleção implícita do `context` são apenas uma conveniência e
    não substituem a escolha explícita.
 
-4. Confirme no contexto a autorização, os efeitos permitidos e proibidos, o
+5. Confirme no contexto a autorização, os efeitos permitidos e proibidos, o
    escopo de repositórios, os critérios, as pendências e as validações exigidas.
 
 No MCP, consulte primeiro `workflow_list_projects`, `workflow_list_features`,
 `workflow_list_repositories`, `workflow_list_decisions` e
 `workflow_list_pending`. Depois use `workflow_context` e `workflow_record`.
 
-## Classificação: FEATURE ou PATCH
+## Classificação: QUICK_CHANGE, PATCH ou FEATURE
 
 Faça esta classificação antes de escolher a fatia. Ela é uma decisão
 operacional do agente, não uma preferência de nomenclatura:
 
+- **QUICK_CHANGE** é uma mudança local, reversível e diretamente verificável.
+  Ela não cria feature nem fatia e usa `quick start`/`quick finish`, com
+  `quick promote` ou `quick cancel` quando necessário.
+  Exige autorização humana explícita, checkout limpo, um repositório, até cinco
+  paths e um único resultado. Não admite mudança de API, banco, autorização,
+  tenant, dados privados, jobs, tempo real ou integração.
 - **PATCH** é uma modificação pontual com um único resultado verificável e
   escopo pequeno. Use-o para correção isolada, ajuste de configuração,
   alteração localizada de documentação, texto, estilo ou comportamento que
@@ -126,6 +143,34 @@ Use estas perguntas como teste rápido para `PATCH`:
 Se todas as respostas forem sim, abra `PATCH`. Se qualquer resposta for não,
 abra `FEATURE`. Quando ainda houver dúvida, escolha `FEATURE`; não use
 `PATCH` para esconder incerteza ou uma mudança grande.
+
+Antes desse teste, verifique se o pedido cabe em `QUICK_CHANGE`:
+
+1. A mudança é local, reversível e possui um único resultado?
+2. Cabe em um repositório e em até cinco paths específicos?
+3. Não altera contrato, persistência, autorização, tenancy ou integração?
+4. Pode ser comprovada com um diff, comando curto ou verificação manual direta?
+
+Se todas as respostas forem sim, use o caminho rápido. Para visibilidade por
+role, declare `ROLE_VISIBILITY` e a permissão existente em `--guard`; se uma
+permissão precisar ser criada ou a UI for a única barreira de acesso, use
+`PATCH` com `AUTHORIZATION`. Se o diff sair do escopo, o fechamento retorna
+`QUICK_CHANGE_REQUIRES_PROMOTION`: crie o PATCH governado e vincule-o com
+`quick promote`.
+
+```bash
+rtk node dist/interfaces/cli/main.js quick start \
+  --project <project-key> --key <change-key> \
+  --title "<título>" --summary "<resultado>" \
+  --requested-by human:<identidade> \
+  --reason "<por que é elegível>" \
+  --repository <repository-key> --paths '["<path>"]'
+
+rtk node dist/interfaces/cli/main.js quick finish \
+  --project <project-key> --key <change-key> \
+  --completed-by agent:<identidade> \
+  --verification-kind DIFF --verification "<evidência curta>"
+```
 
 Para uma modificação pontual, use o caminho enxuto:
 
@@ -467,6 +512,9 @@ altere o conteúdo validado invalida o GREEN e exige um novo ciclo de validaçã
 
 Depois da autorização, conduza o ciclo sem pedir que o usuário execute
 comandos do ledger:
+
+Para `PATCH`, avance diretamente de `AUTHORIZED` para `IMPLEMENTING`; não
+registre exceção TDD artificial. Para `FEATURE`, siga o ciclo abaixo:
 
 1. Defina os testes aplicáveis e avance para `TESTS_DEFINED`.
 2. Execute `validate run --purpose RED` antes da implementação. RED

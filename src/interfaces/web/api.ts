@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { isWorkflowApplicationError } from '../../application/workflow-ledger.js';
 import { isDashboardView, type DashboardView } from '../../application/dashboard.js';
+import { riskTagValues } from '../../application/types.js';
 import type { ExecuteValidationInput } from '../../application/types.js';
 import { WorkflowTransitionError } from '../../domain/workflow-state.js';
 import { formatValidationResult } from '../validation-output.js';
@@ -16,6 +17,37 @@ const selectionSchema = z.object({
   featureKey: optionalKey,
   itemKey: optionalKey,
 });
+
+const quickStartSchema = z.object({
+  projectKey: z.string().trim().min(1),
+  key: z.string().trim().min(1),
+  title: z.string().trim().min(1),
+  summary: z.string().trim().min(1),
+  requestedBy: z.string().trim().min(1),
+  eligibilityReason: z.string().trim().min(1),
+  repositoryKey: z.string().trim().min(1),
+  paths: z.array(z.string().trim().min(1)).min(1).max(5),
+  riskTags: z.enum(riskTagValues).array().optional(),
+  guardReference: z.string().trim().min(1).optional(),
+});
+
+const quickFinishSchema = z.object({
+  projectKey: z.string().trim().min(1),
+  key: z.string().trim().min(1),
+  completedBy: z.string().trim().min(1),
+  verificationKind: z.enum(['DIFF', 'COMMAND', 'MANUAL']),
+  verificationSummary: z.string().trim().min(1),
+});
+
+const quickPromoteSchema = z.object({
+  projectKey: z.string().trim().min(1),
+  key: z.string().trim().min(1),
+  patchKey: z.string().trim().min(1),
+  actor: z.string().trim().min(1),
+  reason: z.string().trim().min(1),
+});
+
+const quickCancelSchema = quickPromoteSchema.omit({ patchKey: true });
 
 const actionSchema = z.object({
   action: z.enum([
@@ -102,6 +134,35 @@ export function createWebApp(app: WorkflowApp) {
       projectKey: requiredQuery(query, 'projectKey'),
       featureKey: requiredQuery(query, 'featureKey'),
     }));
+  }));
+
+  router.get('/quick-changes', asyncRoute(async (request, response) => {
+    const query = request.query as Record<string, string | string[] | undefined>;
+    const status = firstQuery(query.status) ?? 'OPEN';
+    if (!['OPEN', 'CLOSED', 'PROMOTED', 'CANCELLED', 'ALL'].includes(status)) {
+      throw new WebError(400, 'QUICK_CHANGE_STATUS_INVALID', 'Status de ajuste rápido inválido');
+    }
+    response.json(await app.quickChanges.list({
+      projectKey: requiredQuery(query, 'projectKey'),
+      key: firstQuery(query.key),
+      status: status as 'OPEN' | 'CLOSED' | 'PROMOTED' | 'CANCELLED' | 'ALL',
+    }));
+  }));
+
+  router.post('/quick-changes/start', asyncRoute(async (request, response) => {
+    response.status(201).json(await app.quickChanges.start(quickStartSchema.parse(request.body)));
+  }));
+
+  router.post('/quick-changes/finish', asyncRoute(async (request, response) => {
+    response.json(await app.quickChanges.finish(quickFinishSchema.parse(request.body)));
+  }));
+
+  router.post('/quick-changes/promote', asyncRoute(async (request, response) => {
+    response.json(await app.quickChanges.promote(quickPromoteSchema.parse(request.body)));
+  }));
+
+  router.post('/quick-changes/cancel', asyncRoute(async (request, response) => {
+    response.json(await app.quickChanges.cancel(quickCancelSchema.parse(request.body)));
   }));
 
   router.get('/validations/:validationId/log', asyncRoute(async (request, response) => {

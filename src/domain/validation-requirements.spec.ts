@@ -54,4 +54,12 @@ describe('validation requirements', () => {
       unknownRiskTags: [],
     });
   });
+
+  it('requires negative security and role interaction evidence for access changes', () => {
+    expect(deriveValidationRequirements(['AUTHORIZATION', 'ROLE_VISIBILITY'])).toEqual({
+      riskTags: ['AUTHORIZATION', 'ROLE_VISIBILITY'],
+      requiredCapabilities: ['SECURITY_NEGATIVE', 'UI_INTERACTION'],
+      unknownRiskTags: [],
+    });
+  });
 });

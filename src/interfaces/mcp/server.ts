@@ -76,6 +76,83 @@ export function createMcpServer(app: WorkflowApp): McpServer {
   );
 
   server.registerTool(
+    'workflow_quick_start',
+    {
+      description: 'Abre um ajuste rápido fora do ciclo de fatias, com autorização humana, escopo curto e baseline Git limpo.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        requestedBy: z.string().describe('Ator humano no formato human:<identidade>.'),
+        eligibilityReason: z.string(),
+        repositoryKey: z.string(),
+        paths: z.array(z.string()).min(1).max(5),
+        riskTags: z.enum(riskTagValues).array().optional(),
+        guardReference: z.string().optional(),
+      },
+    },
+    async (input) => runTool(() => app.quickChanges.start(input)),
+  );
+
+  server.registerTool(
+    'workflow_quick_finish',
+    {
+      description: 'Fecha um ajuste rápido no commit atual, conferindo diff limpo e paths autorizados.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        completedBy: z.string(),
+        verificationKind: z.enum(['DIFF', 'COMMAND', 'MANUAL']),
+        verificationSummary: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.quickChanges.finish(input)),
+  );
+
+  server.registerTool(
+    'workflow_quick_promote',
+    {
+      description: 'Promove um ajuste rápido para um PATCH governado já criado e preserva a ligação histórica.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        patchKey: z.string(),
+        actor: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.quickChanges.promote(input)),
+  );
+
+  server.registerTool(
+    'workflow_quick_cancel',
+    {
+      description: 'Cancela um ajuste rápido aberto e libera seu escopo.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string(),
+        actor: z.string(),
+        reason: z.string(),
+      },
+    },
+    async (input) => runTool(() => app.quickChanges.cancel(input)),
+  );
+
+  server.registerTool(
+    'workflow_list_quick_changes',
+    {
+      description: 'Lista ajustes rápidos; por padrão retorna somente os abertos.',
+      inputSchema: {
+        projectKey: z.string(),
+        key: z.string().optional(),
+        status: z.enum(['OPEN', 'CLOSED', 'PROMOTED', 'CANCELLED', 'ALL']).default('OPEN'),
+      },
+    },
+    async (input) => runTool(() => app.quickChanges.list(input)),
+  );
+
+  server.registerTool(
     'workflow_ready_frontier',
     {
       description: 'Mostra somente folhas não terminais e classifica ação imediata, espera humana, dependência, lease ou bloqueio.',
