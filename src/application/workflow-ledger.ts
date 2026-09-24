@@ -321,7 +321,7 @@ export class WorkflowLedger {
         useCases,
         criteria,
         tests,
-        requiresTests: kind === 'CODE',
+        requiresTests: false,
       });
       if (semantic.status !== 'OK') {
         fail(contractError, 'A jornada precisa de um resultado e critérios observáveis.', {
@@ -343,17 +343,9 @@ export class WorkflowLedger {
         key: profile.key,
         capabilities: decodeJson<string[]>(profile.capabilitiesJson, []),
       }));
-      const uiCriterionKeys = new Set(uiCriteria.map((criterion) => criterion.key));
-      const hasLinkedUiTest = !isUiPatch || tests.some((test) => (
-        uiCriterionKeys.has(test.criterionKey ?? '')
-        && validationProfiles.some((profile) => (
-          profile.key === test.runnerProfileKey
-          && profile.capabilities.includes('UI_INTERACTION')
-        ))
-      ));
       const validation = assessValidationCoverage({ riskTags, tests, profiles: validationProfiles });
-      if (!hasLinkedUiTest || validation.status !== 'OK') {
-        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis que cubram os riscos e o critério UI.', {
+      if (validation.status !== 'OK') {
+        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis que cubram os riscos declarados.', {
           missingCapabilities: validation.missingCapabilities,
           missingProfileKeys: validation.missingProfileKeys,
         });
@@ -893,15 +885,8 @@ export class WorkflowLedger {
         tests: input.tests,
         profiles: validationProfiles,
       });
-      const hasLinkedUiTest = !isUiPatch || input.tests.some((test) => (
-        uiCriteria.some((criterion) => criterion.key === test.criterionKey)
-        && validationProfiles.some((profile) => (
-          profile.key === test.runnerProfileKey
-          && profile.capabilities.includes('UI_INTERACTION')
-        ))
-      ));
-      if (validation.status !== 'OK' || !hasLinkedUiTest) {
-        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis ativos que cubram os riscos e critérios UI.', {
+      if (validation.status !== 'OK') {
+        fail('VALIDATION_PLAN_INCOMPLETE', 'O plano precisa de perfis ativos que cubram os riscos declarados.', {
           missingCapabilities: validation.missingCapabilities,
           missingProfileKeys: validation.missingProfileKeys,
         });

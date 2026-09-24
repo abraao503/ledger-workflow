@@ -46,4 +46,12 @@ describe('validation requirements', () => {
       missingProfileKeys: [],
     });
   });
+
+  it('does not require UI interaction for frontend or visual risk tags', () => {
+    expect(deriveValidationRequirements(['FRONTEND', 'VISUAL_ONLY'])).toEqual({
+      riskTags: ['FRONTEND', 'VISUAL_ONLY'],
+      requiredCapabilities: [],
+      unknownRiskTags: [],
+    });
+  });
 });

@@ -148,9 +148,9 @@ alterados.
 
 Para `PATCH` que altera uma página, componente ou comportamento visual, o
 contrato estruturado é obrigatório. Inclua `--scope`, `--risk-tags`,
-`--use-cases`, `--criteria` e `--tests`; o caso de uso descreve o ator e a
-jornada, o critério usa `evidenceKind: UI` e o teste aponta para um perfil
-registrado com capacidade `UI_INTERACTION`. Exemplo:
+`--use-cases` e `--criteria`; o caso de uso descreve o ator e a jornada, e o
+critério usa `evidenceKind: UI`. Testes e perfis de interação visual podem ser
+adicionados quando forem úteis, mas não são obrigatórios. Exemplo:
 
 ```bash
 rtk node dist/interfaces/cli/main.js task create \
@@ -160,8 +160,7 @@ rtk node dist/interfaces/cli/main.js task create \
   --scope '{"repositories":[{"repositoryKey":"front","paths":["src/pages/OperationChecklistTemplatesPage.tsx","src/components/operation-checklists/**"]}]}' \
   --risk-tags '["VISUAL_ONLY"]' \
   --use-cases '[{"key":"UC-01","title":"Consultar modelos","actor":"operador com leitura de atendimentos","preconditions":"workspace operacional selecionado","trigger":"abre a biblioteca de checklists","expectedOutcome":"encontra um modelo e entende como aplicá-lo"}]' \
-  --criteria '[{"key":"AC-01","statement":"a jornada está clara e utilizável nas viewports larga e estreita","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]' \
-  --tests '[{"key":"T-01","name":"consultar modelos em dois viewports","purpose":"GREEN","runnerProfileKey":"<perfil-ui-interaction>","criterionKey":"AC-01"}]'
+  --criteria '[{"key":"AC-01","statement":"a jornada está clara e utilizável nas viewports larga e estreita","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]'
 ```
 
 Use `--kind DOCUMENTATION` para uma `PATCH` somente documental. Esse caminho
@@ -263,10 +262,10 @@ registre no item, antes de `READY`:
 - critérios `EXPECTED` com `evidenceKind: UI` e, quando a jornada atravessar
   recarregamento ou persistência, `RELOAD`; use critérios `FORBIDDEN` para
   registrar regressões como identificadores crus, texto técnico ou overflow;
-- testes ligados aos critérios e um perfil registrado com a capacidade
-  `UI_INTERACTION` quando a mudança for visual. Se esse perfil não existir,
-  registre a lacuna e pare para replanejar ou cadastrá-lo; não trate lint,
-  typecheck ou build como prova visual.
+- critérios ligados à jornada e, opcionalmente, testes com perfis registrados
+  quando a mudança exigir uma validação de interação visual específica. A
+  ausência desse perfil não bloqueia o plano; lint, typecheck e build continuam
+  sendo as validações estruturais aplicáveis.
 
 Durante a execução, o agente deve consultar as referências do item, localizar
 o padrão equivalente mais próximo no frontend e criar uma fronteira de
@@ -281,14 +280,15 @@ jornada e para as permissões registradas. Só depois de examinar a tela e o
 contrato de roles faça perguntas curtas sobre decisões de produto ainda
 indefinidas; não pergunte novamente o que o contexto já respondeu.
 
-No GREEN/CHECK de uma fatia visual, execute a validação estrutural aplicável e
-a validação de interface prevista no item. Registre evidência para critérios
-`EXPECTED` e `FORBIDDEN`, incluindo viewport estreita quando ela fizer parte
-do contrato. Percorra a tela completa e todos os componentes alterados como
-cada role prevista no contrato; confira estados e ações permitidos, não apenas
-posição ou aparência isolada de componentes. Para mudanças de alto risco
-visual, declare revisão `INDEPENDENT`; `SELF` não conta como revisão
-independente. Lint, typecheck e build não são evidência visual.
+No GREEN/CHECK de uma fatia visual, execute as validações estruturais aplicáveis
+e a validação de interface somente quando ela estiver explicitamente prevista
+no item. Registre evidência para critérios `EXPECTED` e `FORBIDDEN`, incluindo
+viewport estreita quando ela fizer parte do contrato. Percorra a tela completa
+e todos os componentes alterados como cada role prevista no contrato; confira
+estados e ações permitidos, não apenas posição ou aparência isolada de
+componentes. Para mudanças de alto risco visual, declare revisão `INDEPENDENT`;
+`SELF` não conta como revisão independente. Lint, typecheck e build cobrem a
+estrutura, não substituem uma revisão visual quando ela for necessária.
 
 Uma `PATCH` pode usar uma definição enxuta, mas não pode usar esse atalho para
 omitir o contrato de apresentação: sua instrução e seu resumo devem informar

@@ -174,7 +174,7 @@ describe('task types', () => {
     const plan = await ledger.checkPlan({ projectKey: 'tasks', featureKey: 'P4' });
     expect(plan.items[0]).toMatchObject({
       semanticStatus: 'OK', validationStatus: 'OK',
-      requiredCapabilities: ['UI_INTERACTION'],
+      requiredCapabilities: [],
     });
 
     await client.testSpecification.deleteMany({ where: { workItemId: patch.item.id } });
@@ -182,6 +182,30 @@ describe('task types', () => {
     await client.useCase.deleteMany({ where: { workItemId: patch.item.id } });
     const legacyPlan = await ledger.checkPlan({ projectKey: 'tasks', featureKey: 'P4' });
     expect(legacyPlan.items[0]).toMatchObject({ semanticStatus: 'BLOCKED' });
+  });
+
+  it('allows a visual PATCH without requiring a UI interaction profile', async () => {
+    const patch = await ledger.createPointTask({
+      projectKey: 'tasks', key: 'P7', title: 'Ajustar ação visual',
+      summary: 'Ajuste pontual de uma ação visível.',
+      scope: { repositories: [{ repositoryKey: 'front', paths: ['src/components/Action.tsx'] }] },
+      riskTags: ['VISUAL_ONLY'],
+      useCases: [{
+        key: 'UC-01', title: 'Usar ação', actor: 'operador',
+        preconditions: 'tela aberta', trigger: 'aciona o controle',
+        expectedOutcome: 'a ação fica disponível e compreensível',
+      }],
+      criteria: [{
+        key: 'AC-01', statement: 'a ação é apresentada de forma clara',
+        useCaseKey: 'UC-01', evidenceKind: 'UI', polarity: 'EXPECTED',
+      }],
+    });
+
+    const plan = await ledger.checkPlan({ projectKey: 'tasks', featureKey: 'P7' });
+    expect(patch.item.state).toBe('READY');
+    expect(plan.items[0]).toMatchObject({
+      semanticStatus: 'OK', validationStatus: 'OK', requiredCapabilities: [],
+    });
   });
 
   it('rejects an incomplete structured contract outside the UI', async () => {

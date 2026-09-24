@@ -1,5 +1,5 @@
 const riskCapabilityMatrix: Record<string, readonly string[]> = {
-  FRONTEND: ['UI_INTERACTION'],
+  FRONTEND: [],
   API_READ: ['API_READ'],
   API_WRITE: ['API_INTEGRATION', 'READ_AFTER_WRITE'],
   DATABASE: ['DATABASE_PERSISTENCE'],
@@ -9,7 +9,7 @@ const riskCapabilityMatrix: Record<string, readonly string[]> = {
   REALTIME: ['REALTIME_RECONCILIATION'],
   ASYNC_JOB: ['ASYNC_CONSISTENCY'],
   EXTERNAL_INTEGRATION: ['EXTERNAL_CONTRACT'],
-  VISUAL_ONLY: ['UI_INTERACTION'],
+  VISUAL_ONLY: [],
 };
 
 export type ValidationRequirementAssessment = {

@@ -86,7 +86,9 @@ O ledger aceita dois tipos de tarefa:
   única, já em `READY`, sem template público ou auditoria de tamanho. Em uma
   correção sem UI, pode seguir sem casos de uso, critérios, testes ou RED. Se
   alterar uma tela, componente ou comportamento visual, precisa fornecer o
-  contrato estruturado de jornada, critérios de UI e perfil de teste visual.
+  contrato estruturado de jornada e critérios de UI. A validação de interface
+  pode ser registrada quando houver um perfil adequado, mas não bloqueia a
+  execução da `PATCH`.
 
 `PATCH` mantém os controles que protegem a execução: autorização humana,
 baseline Git, lease, GREEN, revisão e commit. Depois de reivindicada, ela pode
@@ -109,8 +111,8 @@ node dist/interfaces/cli/main.js item transition \
 ```
 
 Esse exemplo é para uma mudança sem interface. Uma `PATCH` que altera UI
-precisa declarar jornada, critério `UI` e teste com perfil `UI_INTERACTION`
-registrado. Para texto e layout de um frontend, `--kind DOCUMENTATION` não se
+precisa declarar jornada e critério `UI`; um teste com perfil `UI_INTERACTION`
+é opcional. Para texto e layout de um frontend, `--kind DOCUMENTATION` não se
 aplica: reserve esse tipo para documentação, sem cerimônia TDD.
 
 ```bash
@@ -120,8 +122,7 @@ node dist/interfaces/cli/main.js task create \
   --scope '{"repositories":[{"repositoryKey":"front","paths":["src/pages/ModelsPage.tsx","src/components/models/**"]}]}' \
   --risk-tags '["VISUAL_ONLY"]' \
   --use-cases '[{"key":"UC-01","title":"Consultar modelos","actor":"operador","preconditions":"workspace selecionado","trigger":"abre a biblioteca","expectedOutcome":"encontra e aplica o modelo permitido"}]' \
-  --criteria '[{"key":"AC-01","statement":"a jornada funciona em viewports desktop e mobile","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]' \
-  --tests '[{"key":"T-01","name":"consultar modelos em dois viewports","purpose":"GREEN","runnerProfileKey":"<perfil-ui-interaction>","criterionKey":"AC-01"}]'
+  --criteria '[{"key":"AC-01","statement":"a jornada funciona em viewports desktop e mobile","useCaseKey":"UC-01","evidenceKind":"UI","polarity":"EXPECTED"}]'
 ```
 
 Use `task list --project <project-key>` para consultar os dois tipos. O comando
@@ -541,20 +542,10 @@ afetados, não somente trocar a posição dos elementos. Não adicione filtros o
 abas sem necessidade demonstrada pela tarefa ou pelas permissões. Lint,
 typecheck e build não comprovam por si só a qualidade visual.
 
-O `plan check` já pode cruzar `FRONTEND`/`VISUAL_ONLY` com a capacidade
-`UI_INTERACTION` e verificar critérios observáveis. Ele não decide sozinho se
-uma interface parece pertencer ao produto: essa parte exige evidência de uso e
-revisão humana, preferencialmente independente nas mudanças visuais de maior
-risco. Se a validação visual ainda não estiver disponível, a lacuna deve ficar
-visível no ledger em vez de ser mascarada por uma validação estrutural.
-
-No workspace Carará, o perfil `front-playwright-ui` executa o smoke test do
-frontend em Chromium desktop e mobile. Ele lê o usuário administrador de teste
-do `.env` local em tempo de execução; o ledger guarda apenas o comando e a
-capacidade `UI_INTERACTION`, nunca o e-mail ou a senha. O administrador serve
-para autenticar o fluxo. Cenários que exigem outro papel devem criar uma
-fixture explícita, identificável e reversível, com limpeza ao final — não devem
-alterar usuários reais como efeito colateral do smoke test compartilhado.
+O `plan check` mantém a jornada e os critérios observáveis para mudanças de
+interface, mas não exige um perfil de interação visual. Perfis com capacidade
+`UI_INTERACTION` continuam disponíveis para validações direcionadas quando
+forem úteis; sua ausência não bloqueia a fatia.
 
 ### Feedback e correções na entrega ativa
 
